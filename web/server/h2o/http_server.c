@@ -1,10 +1,16 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "daemon/common.h"
 #include "streaming/common.h"
 #include "http_server.h"
 
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wunused-parameter"
+#pragma GCC diagnostic ignored "-Wunused-but-set-variable"
+#pragma GCC diagnostic ignored "-Wtype-limits"
 #include "h2o.h"
 #include "h2o/http1.h"
+#pragma GCC diagnostic pop
 
 #include "streaming.h"
 #include "h2o_utils.h"
@@ -198,6 +204,7 @@ static inline int _netdata_uberhandler(h2o_req_t *req, RRDHOST **host)
     if (!api_command.len)
         return 1;
 
+    // TODO - get a web_client from the cache
     // this (emulating struct web_client) is a hack and will be removed
     // in future PRs but needs bigger changes in old http_api_v1
     // we need to make the web_client_api_request_v1 to be web server
@@ -210,7 +217,8 @@ static inline int _netdata_uberhandler(h2o_req_t *req, RRDHOST **host)
     w.response.header = buffer_create(NBUF_INITIAL_SIZE_RESP, NULL);
     w.url_query_string_decoded = buffer_create(NBUF_INITIAL_SIZE_RESP, NULL);
     w.url_as_received = buffer_create(NBUF_INITIAL_SIZE_RESP, NULL);
-    w.acl = HTTP_ACL_DASHBOARD;
+    w.port_acl = HTTP_ACL_H2O | HTTP_ACL_ALL_FEATURES;
+    w.acl = w.port_acl; // TODO - web_client_update_acl_matches(w) to restrict this based on user configuration
 
     char *path_c_str = iovec_to_cstr(&api_command);
     char *path_unescaped = url_unescape(path_c_str);
@@ -233,14 +241,19 @@ static inline int _netdata_uberhandler(h2o_req_t *req, RRDHOST **host)
         web_client_api_request_v1(*host, &w, path_unescaped);
     freez(path_unescaped);
 
-    h2o_iovec_t body = buffer_to_h2o_iovec(w.response.data);
-
     // we move msg body to req->pool managed memory as it has to
     // live until whole response has been encrypted and sent
     // when req is finished memory will be freed with the pool
-    void *managed = h2o_mem_alloc_shared(&req->pool, body.len, NULL);
-    memcpy(managed, body.base, body.len);
-    body.base = managed;
+    h2o_iovec_t body;
+    {
+        BUFFER *wb = w.response.data;
+        body.base = wb->buffer;
+        body.len = wb->len;
+
+        void *managed = h2o_mem_alloc_shared(&req->pool, body.len, NULL);
+        memcpy(managed, body.base, body.len);
+        body.base = managed;
+    }
 
     req->res.status = HTTP_RESP_OK;
     req->res.reason = "OK";

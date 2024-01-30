@@ -475,9 +475,9 @@ static int flb_collect_logs_cb(void *record, size_t size, void *data){
                     case FLB_KMSG:
                     {
                         if(unlikely(skip_kmsg_log_buffering)){
-                            static time_t netdata_start_time = 0;
-                            if (!netdata_start_time) netdata_start_time = now_boottime_sec();
-                            if(now_boottime_sec() - netdata_start_time < KERNEL_LOGS_COLLECT_INIT_WAIT) 
+                            static time_t start_time = 0;
+                            if (!start_time) start_time = now_boottime_sec();
+                            if(now_boottime_sec() - start_time < KERNEL_LOGS_COLLECT_INIT_WAIT)
                                 goto skip_collect_and_drop_logs;
                             else skip_kmsg_log_buffering = 0;
                         }
@@ -854,7 +854,7 @@ static int flb_collect_logs_cb(void *record, size_t size, void *data){
                     memcpy(key, str, str_len);
                     key[str_len] = '\0';
                     metrics_dict_item_t item = {.dim_initialized = false, .num_new = 1};
-                    dictionary_set_advanced(dict, key, str_len + 1, &item, sizeof(item), NULL);
+                    dictionary_set_advanced(dict, key, str_len, &item, sizeof(item), NULL);
                 }
                 c = &c[sz];
             }
@@ -1161,7 +1161,7 @@ static int flb_collect_logs_cb(void *record, size_t size, void *data){
             memcpy(key, mqtt_topic, mqtt_topic_size);
             key[mqtt_topic_size] = '\0';
             metrics_dict_item_t item = {.dim_initialized = false, .num_new = 1};
-            dictionary_set_advanced(p_file_info->parser_metrics->mqtt->topic, key, mqtt_topic_size + 1, &item, sizeof(item), NULL);
+            dictionary_set_advanced(p_file_info->parser_metrics->mqtt->topic, key, mqtt_topic_size, &item, sizeof(item), NULL);
 
             // TODO: Fix: Metrics will still be collected if circ_buff_prepare_write() returns 0.
             if(unlikely(!circ_buff_prepare_write(buff, new_tmp_text_size))) 

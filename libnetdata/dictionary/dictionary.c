@@ -115,17 +115,17 @@ struct dictionary_hooks {
     REFCOUNT links;
     usec_t last_master_deletion_us;
 
-    void (*ins_callback)(const DICTIONARY_ITEM *item, void *value, void *data);
-    void *ins_callback_data;
+    dict_cb_insert_t insert_callback;
+    void *insert_callback_data;
 
-    bool (*conflict_callback)(const DICTIONARY_ITEM *item, void *old_value, void *new_value, void *data);
+    dict_cb_conflict_t conflict_callback;
     void *conflict_callback_data;
 
-    void (*react_callback)(const DICTIONARY_ITEM *item, void *value, void *data);
+    dict_cb_react_t react_callback;
     void *react_callback_data;
 
-    void (*del_callback)(const DICTIONARY_ITEM *item, void *value, void *data);
-    void *del_callback_data;
+    dict_cb_delete_t delete_callback;
+    void *delelte_callback_data;
 };
 
 struct dictionary_stats dictionary_stats_category_other = {
@@ -305,16 +305,16 @@ static inline size_t dictionary_hooks_free(DICTIONARY *dict) {
     return 0;
 }
 
-void dictionary_register_insert_callback(DICTIONARY *dict, void (*ins_callback)(const DICTIONARY_ITEM *item, void *value, void *data), void *data) {
+void dictionary_register_insert_callback(DICTIONARY *dict, dict_cb_insert_t insert_callback, void *data) {
     if(unlikely(is_view_dictionary(dict)))
         fatal("DICTIONARY: called %s() on a view.", __FUNCTION__ );
 
     dictionary_hooks_allocate(dict);
-    dict->hooks->ins_callback = ins_callback;
-    dict->hooks->ins_callback_data = data;
+    dict->hooks->insert_callback = insert_callback;
+    dict->hooks->insert_callback_data = data;
 }
 
-void dictionary_register_conflict_callback(DICTIONARY *dict, bool (*conflict_callback)(const DICTIONARY_ITEM *item, void *old_value, void *new_value, void *data), void *data) {
+void dictionary_register_conflict_callback(DICTIONARY *dict, dict_cb_conflict_t conflict_callback, void *data) {
     if(unlikely(is_view_dictionary(dict)))
         fatal("DICTIONARY: called %s() on a view.", __FUNCTION__ );
 
@@ -326,7 +326,7 @@ void dictionary_register_conflict_callback(DICTIONARY *dict, bool (*conflict_cal
     dict->hooks->conflict_callback_data = data;
 }
 
-void dictionary_register_react_callback(DICTIONARY *dict, void (*react_callback)(const DICTIONARY_ITEM *item, void *value, void *data), void *data) {
+void dictionary_register_react_callback(DICTIONARY *dict, dict_cb_react_t react_callback, void *data) {
     if(unlikely(is_view_dictionary(dict)))
         fatal("DICTIONARY: called %s() on a view.", __FUNCTION__ );
 
@@ -335,13 +335,13 @@ void dictionary_register_react_callback(DICTIONARY *dict, void (*react_callback)
     dict->hooks->react_callback_data = data;
 }
 
-void dictionary_register_delete_callback(DICTIONARY *dict, void (*del_callback)(const DICTIONARY_ITEM *item, void *value, void *data), void *data) {
+void dictionary_register_delete_callback(DICTIONARY *dict, dict_cb_delete_t delete_callback,  void *data) {
     if(unlikely(is_view_dictionary(dict)))
         fatal("DICTIONARY: called %s() on a view.", __FUNCTION__ );
 
     dictionary_hooks_allocate(dict);
-    dict->hooks->del_callback = del_callback;
-    dict->hooks->del_callback_data = data;
+    dict->hooks->delete_callback = delete_callback;
+    dict->hooks->delelte_callback_data = data;
 }
 
 // ----------------------------------------------------------------------------
@@ -591,7 +591,7 @@ static inline REFCOUNT DICTIONARY_ITEM_REFCOUNT_GET_SOLE(DICTIONARY_ITEM *item) 
 // callbacks execution
 
 static void dictionary_execute_insert_callback(DICTIONARY *dict, DICTIONARY_ITEM *item, void *constructor_data) {
-    if(likely(!dict->hooks || !dict->hooks->ins_callback))
+    if(likely(!dict->hooks || !dict->hooks->insert_callback))
         return;
 
     if(unlikely(is_view_dictionary(dict)))
@@ -604,7 +604,7 @@ static void dictionary_execute_insert_callback(DICTIONARY *dict, DICTIONARY_ITEM
                    dict->creation_line,
                    dict->creation_file);
 
-    dict->hooks->ins_callback(item, item->shared->value, constructor_data?constructor_data:dict->hooks->ins_callback_data);
+    dict->hooks->insert_callback(item, item->shared->value, constructor_data?constructor_data:dict->hooks->insert_callback_data);
     DICTIONARY_STATS_CALLBACK_INSERTS_PLUS1(dict);
 }
 
@@ -652,7 +652,7 @@ static void dictionary_execute_react_callback(DICTIONARY *dict, DICTIONARY_ITEM 
 }
 
 static void dictionary_execute_delete_callback(DICTIONARY *dict, DICTIONARY_ITEM *item) {
-    if(likely(!dict->hooks || !dict->hooks->del_callback))
+    if(likely(!dict->hooks || !dict->hooks->delete_callback))
         return;
 
     // We may execute delete callback on items deleted from a view,
@@ -666,7 +666,7 @@ static void dictionary_execute_delete_callback(DICTIONARY *dict, DICTIONARY_ITEM
                    dict->creation_line,
                    dict->creation_file);
 
-    dict->hooks->del_callback(item, item->shared->value, dict->hooks->del_callback_data);
+    dict->hooks->delete_callback(item, item->shared->value, dict->hooks->delelte_callback_data);
 
     DICTIONARY_STATS_CALLBACK_DELETES_PLUS1(dict);
 }
@@ -996,7 +996,9 @@ static int item_check_and_acquire_advanced(DICTIONARY *dict, DICTIONARY_ITEM *it
             if (having_index_lock) {
                 // delete it from the hashtable
                 if(hashtable_delete_unsafe(dict, item_get_name(item), item->key_len, item) == 0)
-                    netdata_log_error("DICTIONARY: INTERNAL ERROR VIEW: tried to delete item with name '%s', name_len %u that is not in the index", item_get_name(item), (KEY_LEN_TYPE)(item->key_len - 1));
+                    netdata_log_error("DICTIONARY: INTERNAL ERROR VIEW: tried to delete item with name '%s', "
+                                      "name_len %u that is not in the index",
+                                      item_get_name(item), (KEY_LEN_TYPE)(item->key_len));
                 else
                     pointer_del(dict, item);
 
@@ -1237,7 +1239,7 @@ static inline size_t item_set_name(DICTIONARY *dict, DICTIONARY_ITEM *item, cons
     }
     else {
         item->string_name = string_strdupz(name);
-        item->key_len = string_strlen(item->string_name) + 1;
+        item->key_len = string_strlen(item->string_name);
         item->options |= ITEM_OPTION_ALLOCATED_NAME;
     }
 
@@ -1584,7 +1586,7 @@ static inline void dict_item_release_and_check_if_it_is_deleted_and_can_be_remov
 
 static bool dict_item_del(DICTIONARY *dict, const char *name, ssize_t name_len) {
     if(name_len == -1)
-        name_len = (ssize_t)strlen(name) + 1; // we need the terminating null too
+        name_len = (ssize_t)strlen(name);
 
     netdata_log_debug(D_DICTIONARY, "DEL dictionary entry with name '%s'.", name);
 
@@ -1602,9 +1604,9 @@ static bool dict_item_del(DICTIONARY *dict, const char *name, ssize_t name_len) 
     }
     else {
         if(hashtable_delete_unsafe(dict, name, name_len, item) == 0)
-            netdata_log_error("DICTIONARY: INTERNAL ERROR: tried to delete item with name '%s', name_len %zd that is not in the index",
-                              name,
-                              name_len - 1);
+            netdata_log_error("DICTIONARY: INTERNAL ERROR: tried to delete item with name '%s', "
+                              "name_len %zd that is not in the index",
+                              name, name_len);
         else
             pointer_del(dict, item);
 
@@ -1635,7 +1637,7 @@ static DICTIONARY_ITEM *dict_item_add_or_reset_value_and_acquire(DICTIONARY *dic
     }
 
     if(name_len == -1)
-        name_len = (ssize_t)strlen(name) + 1; // we need the terminating null too
+        name_len = (ssize_t)strlen(name);
 
     netdata_log_debug(D_DICTIONARY, "SET dictionary entry with name '%s'.", name);
 
@@ -1754,7 +1756,7 @@ static DICTIONARY_ITEM *dict_item_find_and_acquire(DICTIONARY *dict, const char 
     }
 
     if(name_len == -1)
-        name_len = (ssize_t)strlen(name) + 1; // we need the terminating null too
+        name_len = (ssize_t)strlen(name);
 
     netdata_log_debug(D_DICTIONARY, "GET dictionary entry with name '%s'.", name);
 
@@ -1990,11 +1992,12 @@ static bool api_is_name_good_with_trace(DICTIONARY *dict __maybe_unused, const c
     }
 
     internal_error(
-        name_len > 0 && name_len != (ssize_t)(strlen(name) + 1),
-        "DICTIONARY: attempted to %s() with a name of '%s', having length of %zu (incl. '\\0'), but the supplied name_len = %ld, on a dictionary created from %s() %zu@%s.",
+        name_len > 0 && name_len != (ssize_t)strlen(name),
+        "DICTIONARY: attempted to %s() with a name of '%s', having length of %zu, "
+        "but the supplied name_len = %ld, on a dictionary created from %s() %zu@%s.",
         function,
         name,
-        strlen(name) + 1,
+        strlen(name),
         (long int) name_len,
         dict?dict->creation_function:"unknown",
         dict?dict->creation_line:0,
@@ -2002,10 +2005,11 @@ static bool api_is_name_good_with_trace(DICTIONARY *dict __maybe_unused, const c
 
     internal_error(
         name_len <= 0 && name_len != -1,
-        "DICTIONARY: attempted to %s() with a name of '%s', having length of %zu (incl. '\\0'), but the supplied name_len = %ld, on a dictionary created from %s() %zu@%s.",
+        "DICTIONARY: attempted to %s() with a name of '%s', having length of %zu, "
+        "but the supplied name_len = %ld, on a dictionary created from %s() %zu@%s.",
         function,
         name,
-        strlen(name) + 1,
+        strlen(name),
         (long int) name_len,
         dict?dict->creation_function:"unknown",
         dict?dict->creation_line:0,
@@ -2109,7 +2113,7 @@ void dictionary_flush(DICTIONARY *dict) {
     DICTIONARY_ITEM *item, *next = NULL;
     for(item = dict->items.list; item ;item = next) {
         next = item->next;
-        dict_item_del(dict, item_get_name(item), (ssize_t) item_get_name_len(item) + 1);
+        dict_item_del(dict, item_get_name(item), (ssize_t)item_get_name_len(item));
     }
 
     ll_recursive_unlock(dict, DICTIONARY_LOCK_WRITE);
@@ -2446,8 +2450,8 @@ void dictionary_foreach_done(DICTFE *dfe) {
 // The dictionary is locked for reading while this happens
 // do not use other dictionary calls while walking the dictionary - deadlock!
 
-int dictionary_walkthrough_rw(DICTIONARY *dict, char rw, int (*callback)(const DICTIONARY_ITEM *item, void *entry, void *data), void *data) {
-    if(unlikely(!dict || !callback)) return 0;
+int dictionary_walkthrough_rw(DICTIONARY *dict, char rw, dict_walkthrough_callback_t walkthrough_callback, void *data) {
+    if(unlikely(!dict || !walkthrough_callback)) return 0;
 
     if(unlikely(is_dictionary_destroyed(dict))) {
         internal_error(true, "DICTIONARY: attempted to dictionary_walkthrough_rw() on a destroyed dictionary");
@@ -2473,7 +2477,7 @@ int dictionary_walkthrough_rw(DICTIONARY *dict, char rw, int (*callback)(const D
         if(unlikely(rw == DICTIONARY_LOCK_REENTRANT))
             ll_recursive_unlock(dict, rw);
 
-        int r = callback(item, item->shared->value, data);
+        int r = walkthrough_callback(item, item->shared->value, data);
 
         if(unlikely(rw == DICTIONARY_LOCK_REENTRANT))
             ll_recursive_lock(dict, rw);
@@ -2509,8 +2513,8 @@ static int dictionary_sort_compar(const void *item1, const void *item2) {
     return strcmp(item_get_name((*(DICTIONARY_ITEM **)item1)), item_get_name((*(DICTIONARY_ITEM **)item2)));
 }
 
-int dictionary_sorted_walkthrough_rw(DICTIONARY *dict, char rw, int (*callback)(const DICTIONARY_ITEM *item, void *entry, void *data), void *data, dictionary_sorted_compar compar) {
-    if(unlikely(!dict || !callback)) return 0;
+int dictionary_sorted_walkthrough_rw(DICTIONARY *dict, char rw, dict_walkthrough_callback_t walkthrough_callback, void *data, dict_item_comparator_t item_comparator) {
+    if(unlikely(!dict || !walkthrough_callback)) return 0;
 
     if(unlikely(is_dictionary_destroyed(dict))) {
         internal_error(true, "DICTIONARY: attempted to dictionary_sorted_walkthrough_rw() on a destroyed dictionary");
@@ -2534,8 +2538,8 @@ int dictionary_sorted_walkthrough_rw(DICTIONARY *dict, char rw, int (*callback)(
     if(unlikely(i != entries))
         entries = i;
 
-    if(compar)
-        qsort(array, entries, sizeof(DICTIONARY_ITEM *), (qsort_compar)compar);
+    if(item_comparator)
+        qsort(array, entries, sizeof(DICTIONARY_ITEM *), (qsort_compar) item_comparator);
     else
         qsort(array, entries, sizeof(DICTIONARY_ITEM *), dictionary_sort_compar);
 
@@ -2545,7 +2549,7 @@ int dictionary_sorted_walkthrough_rw(DICTIONARY *dict, char rw, int (*callback)(
         item = array[i];
 
         if(callit)
-            r = callback(item, item->shared->value, data);
+            r = walkthrough_callback(item, item->shared->value, data);
 
         dict_item_release_and_check_if_it_is_deleted_and_can_be_removed_under_this_lock_mode(dict, item, rw);
         // item_release(dict, item);
@@ -2580,7 +2584,7 @@ void *thread_cache_entry_get_or_set(void *key,
     if(unlikely(!key || !key_length)) return NULL;
 
     if(key_length == -1)
-        key_length = (ssize_t)strlen((char *)key) + 1;
+        key_length = (ssize_t)strlen((char *)key);
 
     JError_t J_Error;
     Pvoid_t *Rc = JudyHSIns(&thread_cache_judy_array, key, key_length, &J_Error);
@@ -2627,7 +2631,7 @@ static char **dictionary_unittest_generate_names(size_t entries) {
     char **names = mallocz(sizeof(char *) * entries);
     for(size_t i = 0; i < entries ;i++) {
         char buf[25 + 1] = "";
-        snprintfz(buf, sizeof(buf) - 1, "name.%zu.0123456789.%zu!@#$%%^&*(),./[]{}\\|~`", i, entries / 2 + i);
+        snprintfz(buf, sizeof(buf), "name.%zu.0123456789.%zu!@#$%%^&*(),./[]{}\\|~`", i, entries / 2 + i);
         names[i] = strdupz(buf);
     }
     return names;
@@ -2637,7 +2641,7 @@ static char **dictionary_unittest_generate_values(size_t entries) {
     char **values = mallocz(sizeof(char *) * entries);
     for(size_t i = 0; i < entries ;i++) {
         char buf[25 + 1] = "";
-        snprintfz(buf, sizeof(buf) - 1, "value-%zu-0987654321.%zu%%^&*(),. \t !@#$/[]{}\\|~`", i, entries / 2 + i);
+        snprintfz(buf, sizeof(buf), "value-%zu-0987654321.%zu%%^&*(),. \t !@#$/[]{}\\|~`", i, entries / 2 + i);
         values[i] = strdupz(buf);
     }
     return values;
@@ -2646,7 +2650,7 @@ static char **dictionary_unittest_generate_values(size_t entries) {
 static size_t dictionary_unittest_set_clone(DICTIONARY *dict, char **names, char **values, size_t entries) {
     size_t errors = 0;
     for(size_t i = 0; i < entries ;i++) {
-        size_t vallen = strlen(values[i]) + 1;
+        size_t vallen = strlen(values[i]);
         char *val = (char *)dictionary_set(dict, names[i], values[i], vallen);
         if(val == values[i]) { fprintf(stderr, ">>> %s() returns reference to value\n", __FUNCTION__); errors++; }
         if(!val || memcmp(val, values[i], vallen) != 0)  { fprintf(stderr, ">>> %s() returns invalid value\n", __FUNCTION__); errors++; }
@@ -2673,7 +2677,7 @@ static size_t dictionary_unittest_set_null(DICTIONARY *dict, char **names, char 
 static size_t dictionary_unittest_set_nonclone(DICTIONARY *dict, char **names, char **values, size_t entries) {
     size_t errors = 0;
     for(size_t i = 0; i < entries ;i++) {
-        size_t vallen = strlen(values[i]) + 1;
+        size_t vallen = strlen(values[i]);
         char *val = (char *)dictionary_set(dict, names[i], values[i], vallen);
         if(val != values[i]) { fprintf(stderr, ">>> %s() returns invalid pointer to value\n", __FUNCTION__); errors++; }
     }
@@ -2683,7 +2687,7 @@ static size_t dictionary_unittest_set_nonclone(DICTIONARY *dict, char **names, c
 static size_t dictionary_unittest_get_clone(DICTIONARY *dict, char **names, char **values, size_t entries) {
     size_t errors = 0;
     for(size_t i = 0; i < entries ;i++) {
-        size_t vallen = strlen(values[i]) + 1;
+        size_t vallen = strlen(values[i]);
         char *val = (char *)dictionary_get(dict, names[i]);
         if(val == values[i]) { fprintf(stderr, ">>> %s() returns reference to value\n", __FUNCTION__); errors++; }
         if(!val || memcmp(val, values[i], vallen) != 0)  { fprintf(stderr, ">>> %s() returns invalid value\n", __FUNCTION__); errors++; }
@@ -2751,7 +2755,7 @@ static size_t dictionary_unittest_reset_clone(DICTIONARY *dict, char **names, ch
     // set the name as value too
     size_t errors = 0;
     for(size_t i = 0; i < entries ;i++) {
-        size_t vallen = strlen(names[i]) + 1;
+        size_t vallen = strlen(names[i]);
         char *val = (char *)dictionary_set(dict, names[i], names[i], vallen);
         if(val == names[i]) { fprintf(stderr, ">>> %s() returns reference to value\n", __FUNCTION__); errors++; }
         if(!val || memcmp(val, names[i], vallen) != 0)  { fprintf(stderr, ">>> %s() returns invalid value\n", __FUNCTION__); errors++; }
@@ -2764,7 +2768,7 @@ static size_t dictionary_unittest_reset_nonclone(DICTIONARY *dict, char **names,
     // set the name as value too
     size_t errors = 0;
     for(size_t i = 0; i < entries ;i++) {
-        size_t vallen = strlen(names[i]) + 1;
+        size_t vallen = strlen(names[i]);
         char *val = (char *)dictionary_set(dict, names[i], names[i], vallen);
         if(val != names[i]) { fprintf(stderr, ">>> %s() returns invalid pointer to value\n", __FUNCTION__); errors++; }
         if(!val)  { fprintf(stderr, ">>> %s() returns invalid value\n", __FUNCTION__); errors++; }
@@ -2776,7 +2780,7 @@ static size_t dictionary_unittest_reset_dont_overwrite_nonclone(DICTIONARY *dict
     // set the name as value too
     size_t errors = 0;
     for(size_t i = 0; i < entries ;i++) {
-        size_t vallen = strlen(names[i]) + 1;
+        size_t vallen = strlen(names[i]);
         char *val = (char *)dictionary_set(dict, names[i], names[i], vallen);
         if(val != values[i]) { fprintf(stderr, ">>> %s() returns invalid pointer to value\n", __FUNCTION__); errors++; }
     }
@@ -3253,13 +3257,13 @@ static void *unittest_dict_thread(void *arg) {
                 char buf [256 + 1];
 
                 for (int i = 0; i < 1000; i++) {
-                    snprintfz(buf, sizeof(buf) - 1, "del/flush test %d", i);
+                    snprintfz(buf, sizeof(buf), "del/flush test %d", i);
                     dictionary_set(tu->dict, buf, NULL, 0);
                     tu->stats.ops.inserts++;
                 }
 
                 for (int i = 0; i < 1000; i++) {
-                    snprintfz(buf, sizeof(buf) - 1, "del/flush test %d", i);
+                    snprintfz(buf, sizeof(buf), "del/flush test %d", i);
                     dictionary_del(tu->dict, buf);
                     tu->stats.ops.deletes++;
                 }
@@ -3392,7 +3396,7 @@ static void *unittest_dict_master_thread(void *arg) {
     while(!__atomic_load_n(&tv->join, __ATOMIC_RELAXED)) {
 
         if(!item)
-            item = dictionary_set_and_acquire_item(tv->master, "ITEM1", "123", strlen("123") + 1);
+            item = dictionary_set_and_acquire_item(tv->master, "ITEM1", "123", strlen("123"));
 
         if(__atomic_load_n(&tv->item_master, __ATOMIC_RELAXED) != NULL) {
             dictionary_acquired_item_release(tv->master, item);
@@ -3643,6 +3647,11 @@ size_t dictionary_unittest_views(void) {
     return errors;
 }
 
+/*
+ * FIXME: a dictionary-related leak is reported when running the address
+ * sanitizer. Need to investigate if it's introduced by the unit-test itself,
+ * or the dictionary implementation.
+*/
 int dictionary_unittest(size_t entries) {
     if(entries < 10) entries = 10;
 
@@ -3793,6 +3802,8 @@ int dictionary_unittest(size_t entries) {
     errors += dictionary_unittest_views();
     errors += dictionary_unittest_threads();
     errors += dictionary_unittest_view_threads();
+
+    cleanup_destroyed_dictionaries();
 
     fprintf(stderr, "\n%zu errors found\n", errors);
     return  errors ? 1 : 0;

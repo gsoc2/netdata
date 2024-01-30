@@ -2,7 +2,7 @@
 
 #include "rrdset2json.h"
 
-static int process_label_callback(const char *name, const char *value, RRDLABEL_SRC ls, void *data) {
+static int process_label_callback(const char *name, const char *value, RRDLABEL_SRC ls __maybe_unused, void *data) {
     BUFFER *wb = data;
     buffer_json_member_add_string_or_empty(wb, name,  value);
     return 1;
@@ -88,7 +88,7 @@ void rrdset2json(RRDSET *st, BUFFER *wb, size_t *dimensions_count, size_t *memor
                 buffer_json_member_add_string_or_empty(wb, "id", rrdcalc_name(rc));
                 buffer_json_member_add_string_or_empty(wb, "status", rrdcalc_status2string(rc->status));
                 buffer_json_member_add_string_or_empty(wb, "units", rrdcalc_units(rc));
-                buffer_json_member_add_int64(wb, "duration", (int64_t)rc->update_every);
+                buffer_json_member_add_int64(wb, "duration", (int64_t)rc->config.update_every);
                 buffer_json_object_close(wb);
             }
         }

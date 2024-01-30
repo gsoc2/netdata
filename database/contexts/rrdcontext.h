@@ -210,7 +210,7 @@ typedef struct query_metric {
     RRDR_DIMENSION_FLAGS status;
 
     struct query_metric_tier {
-        STORAGE_METRIC_HANDLE *db_metric_handle;
+        STORAGE_METRIC_HANDLE *smh;
         time_t db_first_time_s;         // the oldest timestamp available for this tier
         time_t db_last_time_s;          // the latest timestamp available for this tier
         time_t db_update_every_s;       // latest update every for this tier
@@ -329,6 +329,13 @@ struct query_timings {
     usec_t finished_ut;
 };
 
+struct label_pattern_list {
+    BUFFER **buffer_list;
+    STRING **key;
+    SIMPLE_PATTERN **labels_pattern;
+    size_t size;
+};
+
 #define query_view_update_every(qt) ((qt)->window.group * (qt)->window.query_granularity)
 
 typedef struct query_target {
@@ -379,6 +386,7 @@ typedef struct query_target {
         uint32_t size;                      // the size of the array
         SIMPLE_PATTERN *pattern;
         SIMPLE_PATTERN *labels_pattern;
+        struct label_pattern_list *label_pattern_list;
         SIMPLE_PATTERN *alerts_pattern;
         SIMPLE_PATTERN *chart_label_key_pattern;
     } instances;

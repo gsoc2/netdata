@@ -15,17 +15,17 @@ void cgroup_netdev_link_init(void) {
 }
 
 const DICTIONARY_ITEM *cgroup_netdev_get(struct cgroup *cg) {
-    if(cg->cgroup_netdev_link)
-        return cg->cgroup_netdev_link;
-
-
-    struct cgroup_netdev_link t = {
+    if(!cg->cgroup_netdev_link) {
+        struct cgroup_netdev_link t = {
             .read_slot = 0,
-            .received = { NAN, NAN },
-            .sent = { NAN, NAN },
-    };
+            .received = {NAN, NAN},
+            .sent = {NAN, NAN},
+        };
 
-    cg->cgroup_netdev_link = dictionary_set_and_acquire_item(cgroup_netdev_link_dict, cg->id, &t, sizeof(struct cgroup_netdev_link));
+        cg->cgroup_netdev_link =
+            dictionary_set_and_acquire_item(cgroup_netdev_link_dict, cg->id, &t, sizeof(struct cgroup_netdev_link));
+    }
+
     return dictionary_acquired_item_dup(cgroup_netdev_link_dict, cg->cgroup_netdev_link);
 }
 
@@ -34,6 +34,7 @@ void cgroup_netdev_delete(struct cgroup *cg) {
         dictionary_acquired_item_release(cgroup_netdev_link_dict, cg->cgroup_netdev_link);
         dictionary_del(cgroup_netdev_link_dict, cg->id);
         dictionary_garbage_collect(cgroup_netdev_link_dict);
+        cg->cgroup_netdev_link = NULL;
     }
 }
 
@@ -97,17 +98,7 @@ void cgroup_netdev_get_bandwidth(struct cgroup *cg, NETDATA_DOUBLE *received, NE
     *sent = t->sent[slot];
 }
 
-int cgroup_function_cgroup_top(uuid_t *transaction __maybe_unused, BUFFER *wb,
-                               usec_t *stop_monotonic_ut __maybe_unused, const char *function __maybe_unused,
-                               void *collector_data __maybe_unused,
-                               rrd_function_result_callback_t result_cb, void *result_cb_data,
-                               rrd_function_progress_cb_t progress_cb, void *progress_cb_data,
-                               rrd_function_is_cancelled_cb_t is_cancelled_cb, void *is_cancelled_cb_data,
-                               rrd_function_register_canceller_cb_t register_canceller_cb __maybe_unused,
-                               void *register_canceller_cb_data __maybe_unused,
-                               rrd_function_register_progresser_cb_t register_progresser_cb __maybe_unused,
-                               void *register_progresser_cb_data __maybe_unused) {
-
+int cgroup_function_cgroup_top(BUFFER *wb, const char *function __maybe_unused) {
     buffer_flush(wb);
     wb->content_type = CT_APPLICATION_JSON;
     buffer_json_initialize(wb, "\"", "\"", 0, true, BUFFER_JSON_OPTIONS_DEFAULT);
@@ -121,6 +112,7 @@ int cgroup_function_cgroup_top(uuid_t *transaction __maybe_unused, BUFFER *wb,
 
     double max_pids = 0.0;
     double max_cpu = 0.0;
+    double max_cpu_throttled = 0.0;
     double max_ram = 0.0;
     double max_disk_io_read = 0.0;
     double max_disk_io_written = 0.0;
@@ -152,6 +144,9 @@ int cgroup_function_cgroup_top(uuid_t *transaction __maybe_unused, BUFFER *wb,
             max_cpu = MAX(max_cpu, cpu);
         }
 
+        double cpu_throttled = (double)cg->cpuacct_cpu_throttling.nr_throttled_perc;
+        max_cpu_throttled = MAX(max_cpu_throttled, cpu_throttled);
+
         double ram = rrddim_get_last_stored_value(cg->st_mem_rd_ram, &max_ram, 1.0);
 
         rd = cg->st_throttle_io_rd_read ? cg->st_throttle_io_rd_read : cg->st_io_rd_read;
@@ -170,6 +165,7 @@ int cgroup_function_cgroup_top(uuid_t *transaction __maybe_unused, BUFFER *wb,
 
         buffer_json_add_array_item_double(wb, pids_current);
         buffer_json_add_array_item_double(wb, cpu);
+        buffer_json_add_array_item_double(wb, cpu_throttled);
         buffer_json_add_array_item_double(wb, ram);
         buffer_json_add_array_item_double(wb, disk_io_read);
         buffer_json_add_array_item_double(wb, disk_io_written);
@@ -216,6 +212,13 @@ int cgroup_function_cgroup_top(uuid_t *transaction __maybe_unused, BUFFER *wb,
                 2, "%", max_cpu, RRDF_FIELD_SORT_DESCENDING, NULL,
                 RRDF_FIELD_SUMMARY_SUM, RRDF_FIELD_FILTER_NONE,
                 RRDF_FIELD_OPTS_VISIBLE,
+                NULL);
+
+        buffer_rrdf_table_add_field(wb, field_id++, "CPU Throttling", "CPU Throttled Runnable Periods",
+                RRDF_FIELD_TYPE_BAR_WITH_INTEGER, RRDF_FIELD_VISUAL_BAR, RRDF_FIELD_TRANSFORM_NUMBER,
+                0, "%", max_cpu_throttled, RRDF_FIELD_SORT_DESCENDING, NULL,
+                RRDF_FIELD_SUMMARY_SUM, RRDF_FIELD_FILTER_NONE,
+                is_inside_k8s ? RRDF_FIELD_OPTS_VISIBLE : RRDF_FIELD_OPTS_NONE,
                 NULL);
 
         // RAM
@@ -334,29 +337,10 @@ int cgroup_function_cgroup_top(uuid_t *transaction __maybe_unused, BUFFER *wb,
     buffer_json_member_add_time_t(wb, "expires", now_realtime_sec() + 1);
     buffer_json_finalize(wb);
 
-    int response = HTTP_RESP_OK;
-    if(is_cancelled_cb && is_cancelled_cb(is_cancelled_cb_data)) {
-        buffer_flush(wb);
-        response = HTTP_RESP_CLIENT_CLOSED_REQUEST;
-    }
-
-    if(result_cb)
-        result_cb(wb, response, result_cb_data);
-
-    return response;
+    return HTTP_RESP_OK;
 }
 
-int cgroup_function_systemd_top(uuid_t *transaction __maybe_unused, BUFFER *wb,
-                                usec_t *stop_monotonic_ut __maybe_unused, const char *function __maybe_unused,
-                                void *collector_data __maybe_unused,
-                                rrd_function_result_callback_t result_cb, void *result_cb_data,
-                                rrd_function_progress_cb_t progress_cb __maybe_unused, void *progress_cb_data __maybe_unused,
-                                rrd_function_is_cancelled_cb_t is_cancelled_cb, void *is_cancelled_cb_data,
-                                rrd_function_register_canceller_cb_t register_canceller_cb __maybe_unused,
-                                void *register_canceller_cb_data __maybe_unused,
-                                rrd_function_register_progresser_cb_t register_progresser_cb __maybe_unused,
-                                void *register_progresser_cb_data __maybe_unused) {
-
+int cgroup_function_systemd_top(BUFFER *wb, const char *function __maybe_unused) {
     buffer_flush(wb);
     wb->content_type = CT_APPLICATION_JSON;
     buffer_json_initialize(wb, "\"", "\"", 0, true, BUFFER_JSON_OPTIONS_DEFAULT);
@@ -514,14 +498,5 @@ int cgroup_function_systemd_top(uuid_t *transaction __maybe_unused, BUFFER *wb,
     buffer_json_member_add_time_t(wb, "expires", now_realtime_sec() + 1);
     buffer_json_finalize(wb);
 
-    int response = HTTP_RESP_OK;
-    if(is_cancelled_cb && is_cancelled_cb(is_cancelled_cb_data)) {
-        buffer_flush(wb);
-        response = HTTP_RESP_CLIENT_CLOSED_REQUEST;
-    }
-
-    if(result_cb)
-        result_cb(wb, response, result_cb_data);
-
-    return response;
+    return HTTP_RESP_OK;
 }

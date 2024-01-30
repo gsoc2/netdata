@@ -36,7 +36,6 @@ struct command_context {
 /* Forward declarations */
 static cmd_status_t cmd_help_execute(char *args, char **message);
 static cmd_status_t cmd_reload_health_execute(char *args, char **message);
-static cmd_status_t cmd_save_database_execute(char *args, char **message);
 static cmd_status_t cmd_reopen_logs_execute(char *args, char **message);
 static cmd_status_t cmd_exit_execute(char *args, char **message);
 static cmd_status_t cmd_fatal_execute(char *args, char **message);
@@ -52,7 +51,6 @@ static cmd_status_t cmd_dumpconfig(char *args, char **message);
 static command_info_t command_info_array[] = {
         {"help", cmd_help_execute, CMD_TYPE_HIGH_PRIORITY},                  // show help menu
         {"reload-health", cmd_reload_health_execute, CMD_TYPE_ORTHOGONAL},   // reload health configuration
-        {"save-database", cmd_save_database_execute, CMD_TYPE_ORTHOGONAL},   // save database for memory mode save
         {"reopen-logs", cmd_reopen_logs_execute, CMD_TYPE_ORTHOGONAL},       // Close and reopen log files
         {"shutdown-agent", cmd_exit_execute, CMD_TYPE_EXCLUSIVE},            // exit cleanly
         {"fatal-agent", cmd_fatal_execute, CMD_TYPE_HIGH_PRIORITY},          // exit with fatal error
@@ -144,21 +142,7 @@ static cmd_status_t cmd_reload_health_execute(char *args, char **message)
 
     nd_log_limits_unlimited();
     netdata_log_info("COMMAND: Reloading HEALTH configuration.");
-    health_reload();
-    nd_log_limits_reset();
-
-    return CMD_STATUS_SUCCESS;
-}
-
-static cmd_status_t cmd_save_database_execute(char *args, char **message)
-{
-    (void)args;
-    (void)message;
-
-    nd_log_limits_unlimited();
-    netdata_log_info("COMMAND: Saving databases.");
-    rrdhost_save_all();
-    netdata_log_info("COMMAND: Databases saved.");
+    health_plugin_reload();
     nd_log_limits_reset();
 
     return CMD_STATUS_SUCCESS;
@@ -183,7 +167,7 @@ static cmd_status_t cmd_exit_execute(char *args, char **message)
 
     nd_log_limits_unlimited();
     netdata_log_info("COMMAND: Cleaning up to exit.");
-    netdata_cleanup_and_exit(0);
+    netdata_cleanup_and_exit(0, NULL, NULL, NULL);
     exit(0);
 
     return CMD_STATUS_SUCCESS;

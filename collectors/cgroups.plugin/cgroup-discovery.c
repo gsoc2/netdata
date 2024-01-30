@@ -42,7 +42,7 @@ static inline void cgroup_free_network_interfaces(struct cgroup *cg) {
         cg->interfaces = i->next;
 
         // delete the registration of proc_net_dev rename
-        netdev_rename_device_del(i->host_device);
+        cgroup_rename_task_device_del(i->host_device);
 
         freez((void *)i->host_device);
         freez((void *)i->container_device);
@@ -351,6 +351,7 @@ static inline void discovery_find_cgroup_in_dir_callback(const char *dir) {
     if (!dir || !*dir) {
         dir = "/";
     }
+
     netdata_log_debug(D_CGROUP, "examining cgroup dir '%s'", dir);
 
     struct cgroup *cg = discovery_cgroup_find(dir);
@@ -360,14 +361,15 @@ static inline void discovery_find_cgroup_in_dir_callback(const char *dir) {
     }
 
     if (cgroup_root_count >= cgroup_root_max) {
-        collector_info("CGROUP: maximum number of cgroups reached (%d). Not adding cgroup '%s'", cgroup_root_count, dir);
+        nd_log_limit_static_global_var(erl, 3600, 0);
+        nd_log_limit(&erl, NDLS_COLLECTORS, NDLP_WARNING, "CGROUP: maximum number of cgroups reached (%d). No more cgroups will be added.", cgroup_root_count);
         return;
     }
 
     if (cgroup_max_depth > 0) {
         int depth = calc_cgroup_depth(dir);
         if (depth > cgroup_max_depth) {
-            collector_info("CGROUP: '%s' is too deep (%d, while max is %d)", dir, depth, cgroup_max_depth);
+            nd_log_collector(NDLP_DEBUG, "CGROUP: '%s' is too deep (%d, while max is %d)", dir, depth, cgroup_max_depth);
             return;
         }
     }
@@ -1082,8 +1084,13 @@ static inline void read_cgroup_network_interfaces(struct cgroup *cg) {
             collector_info("CGROUP: cgroup '%s' has network interface '%s' as '%s'", cg->id, i->host_device, i->container_device);
 
             // register a device rename to proc_net_dev.c
-            netdev_rename_device_add(i->host_device, i->container_device, cg->chart_id, cg->chart_labels,
-                                     k8s_is_kubepod(cg) ? "k8s." : "", cgroup_netdev_get(cg));
+            cgroup_rename_task_add(
+                i->host_device,
+                i->container_device,
+                cg->chart_id,
+                cg->chart_labels,
+                k8s_is_kubepod(cg) ? "k8s." : "",
+                cgroup_netdev_get(cg));
         }
     }
 

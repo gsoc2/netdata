@@ -184,7 +184,7 @@ static struct ibport {
     RRDSET *st_hwpackets;
     RRDSET *st_hwerrors;
 
-    const RRDSETVAR_ACQUIRED *stv_speed;
+    const RRDVAR_ACQUIRED *stv_speed;
 
     usec_t speed_last_collected_usec;
 
@@ -470,7 +470,7 @@ int do_sys_class_infiniband(int update_every, usec_t dt)
                 snprintfz(buffer, FILENAME_MAX, "%s/%s/%s", ports_dirname, port_dent->d_name, "rate");
                 char buffer_rate[65];
                 p->width = 4;
-                if (read_file(buffer, buffer_rate, 64)) {
+                if (read_txt_file(buffer, buffer_rate, sizeof(buffer_rate))) {
                     collector_error("Unable to read '%s'", buffer);
                 } else {
                     char *buffer_width = strstr(buffer_rate, "(");
@@ -545,14 +545,14 @@ int do_sys_class_infiniband(int update_every, usec_t dt)
                 // x4 lanes multiplier as per Documentation/ABI/stable/sysfs-class-infiniband
                 FOREACH_COUNTER_BYTES(GEN_RRD_DIM_ADD_CUSTOM, port, port->width * 8, 1000, RRD_ALGORITHM_INCREMENTAL)
 
-                port->stv_speed = rrdsetvar_custom_chart_variable_add_and_acquire(port->st_bytes, "link_speed");
+                port->stv_speed = rrdvar_chart_variable_add_and_acquire(port->st_bytes, "link_speed");
             }
 
             // Link read values to dimensions
             FOREACH_COUNTER_BYTES(GEN_RRD_DIM_SETP, port)
 
             // For link speed set only variable
-            rrdsetvar_custom_chart_variable_set(port->st_bytes, port->stv_speed, port->speed);
+            rrdvar_chart_variable_set(port->st_bytes, port->stv_speed, port->speed);
 
             rrdset_done(port->st_bytes);
         }

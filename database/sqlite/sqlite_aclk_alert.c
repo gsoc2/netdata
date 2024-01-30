@@ -97,7 +97,7 @@ done:
 //decide if some events should be sent or not
 #define SQL_SELECT_ALERT_BY_ID                                                                                             \
     "SELECT hld.new_status, hl.config_hash_id, hld.unique_id FROM health_log hl, aclk_alert_%s aa, health_log_detail hld " \
-    "WHERE hl.host_id = @host_id AND +hld.unique_id = aa.filtered_alert_unique_id "                                        \
+    "WHERE hl.host_id = @host_id AND hld.unique_id = aa.filtered_alert_unique_id "                                         \
     "AND hld.alarm_id = @alarm_id AND hl.health_log_id = hld.health_log_id "                                               \
     "ORDER BY hld.rowid DESC LIMIT 1"
 
@@ -201,7 +201,7 @@ void sql_queue_alarm_to_aclk(RRDHOST *host, ALARM_ENTRY *ae, bool skip_filter)
         ae->flags |= HEALTH_ENTRY_FLAG_ACLK_QUEUED;
         rrdhost_flag_set(host, RRDHOST_FLAG_ACLK_STREAM_ALERTS);
     } else
-        error_report("Failed to store alert event %"PRId64", rc = %d", ae->unique_id, rc);
+        error_report("Failed to store alert event %"PRIu32", rc = %d", ae->unique_id, rc);
 
 done:
     if (unlikely(sqlite3_finalize(res_alert) != SQLITE_OK))
@@ -821,7 +821,7 @@ void health_alarm_entry2proto_nolock(struct alarm_log_entry *alarm_log, ALARM_EN
 #endif
 
 #ifdef ENABLE_ACLK
-static bool have_recent_alarm(RRDHOST *host, int64_t alarm_id, int64_t mark)
+static bool have_recent_alarm_unsafe(RRDHOST *host, int64_t alarm_id, int64_t mark)
 {
     ALARM_ENTRY *ae = host->health_log.alarms;
 
@@ -882,7 +882,7 @@ void aclk_push_alert_snapshot_event(char *node_id __maybe_unused)
         if (unlikely(ae->new_status == RRDCALC_STATUS_UNINITIALIZED))
             continue;
 
-        if (have_recent_alarm(host, ae->alarm_id, ae->unique_id))
+        if (have_recent_alarm_unsafe(host, ae->alarm_id, ae->unique_id))
             continue;
 
         if (is_event_from_alert_variable_config(ae->unique_id, &host->host_uuid))
@@ -911,7 +911,7 @@ void aclk_push_alert_snapshot_event(char *node_id __maybe_unused)
             if (likely(ae->updated_by_id) || unlikely(ae->new_status == RRDCALC_STATUS_UNINITIALIZED))
                 continue;
 
-            if (have_recent_alarm(host, ae->alarm_id, ae->unique_id))
+            if (have_recent_alarm_unsafe(host, ae->alarm_id, ae->unique_id))
                 continue;
 
             if (is_event_from_alert_variable_config(ae->unique_id, &host->host_uuid))
@@ -1090,7 +1090,7 @@ void aclk_push_alarm_checkpoint(RRDHOST *host __maybe_unused)
             }
 
             active_alerts[cnt].name = (char *)rrdcalc_name(rc);
-            len += string_strlen(rc->name);
+            len += string_strlen(rc->config.name);
             active_alerts[cnt].chart = (char *)rrdcalc_chart_name(rc);
             len += string_strlen(rc->chart);
             active_alerts[cnt].status = rc->status;

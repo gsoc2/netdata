@@ -72,7 +72,7 @@ const struct netdata_static_thread static_threads_common[] = {
         .config_name = "netdata monitoring extended",
         .env_name = "NETDATA_INTERNALS_MONITORING",
         .global_variable = &global_statistics_enabled,
-        .enabled = 0,
+        .enabled = 0, // this is ignored - check main() for "netdata monitoring extended"
         .thread = NULL,
         .init_routine = NULL,
         .start_routine = global_statistics_workers_main
@@ -83,7 +83,7 @@ const struct netdata_static_thread static_threads_common[] = {
         .config_name = "netdata monitoring extended",
         .env_name = "NETDATA_INTERNALS_MONITORING",
         .global_variable = &global_statistics_enabled,
-        .enabled = 0,
+        .enabled = 0, // this is ignored - check main() for "netdata monitoring extended"
         .thread = NULL,
         .init_routine = NULL,
         .start_routine = global_statistics_sqlite3_main
@@ -194,15 +194,6 @@ const struct netdata_static_thread static_threads_common[] = {
         .thread = NULL,
         .init_routine = NULL,
         .start_routine = profile_main
-    },
-    {
-        .name = "DYNCFG",
-        .config_section = NULL,
-        .config_name = NULL,
-        .enabled = 1,
-        .thread = NULL,
-        .init_routine = NULL,
-        .start_routine = dyncfg_main
     },
 
     // terminator

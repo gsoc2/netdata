@@ -6,7 +6,6 @@
 #include "../../web/server/web_client_cache.h"
 
 #define WEB_HDR_ACCEPT_ENC "Accept-Encoding:"
-#define ACLK_MAX_WEB_RESPONSE_SIZE (30 * 1024 * 1024)
 
 pthread_cond_t query_cond_wait = PTHREAD_COND_INITIALIZER;
 pthread_mutex_t query_lock_wait = PTHREAD_MUTEX_INITIALIZER;
@@ -100,30 +99,48 @@ static int http_api_v2(struct aclk_query_thread *query_thr, aclk_query_t query) 
     BUFFER *local_buffer = NULL;
     size_t size = 0;
     size_t sent = 0;
+    usec_t dt_ut = 0;
 
     int z_ret;
     BUFFER *z_buffer = buffer_create(NETDATA_WEB_RESPONSE_INITIAL_SIZE, &netdata_buffers_statistics.buffers_aclk);
-    char *start, *end;
 
     struct web_client *w = web_client_get_from_cache();
-    w->acl = HTTP_ACL_ACLK;
+    web_client_set_conn_cloud(w);
+    w->port_acl = HTTP_ACL_ACLK | HTTP_ACL_ALL_FEATURES;
+    w->acl = w->port_acl;
+    web_client_set_permissions(w, HTTP_ACCESS_MAP_OLD_MEMBER, HTTP_USER_ROLE_MEMBER, WEB_CLIENT_FLAG_AUTH_CLOUD);
+
     w->mode = HTTP_REQUEST_MODE_GET;
     w->timings.tv_in = query->created_tv;
 
     w->interrupt.callback = aclk_web_client_interrupt_cb;
     w->interrupt.callback_data = pending_req_list_add(query->msg_id);
 
-    usec_t t;
+    buffer_flush(w->response.data);
+    buffer_strcat(w->response.data, query->data.http_api_v2.payload);
+
+    HTTP_VALIDATION validation = http_request_validate(w);
+    if(validation != HTTP_VALIDATION_OK) {
+        nd_log(NDLS_ACCESS, NDLP_ERR, "ACLK received request is not valid, code %d", validation);
+        retval = 1;
+        w->response.code = HTTP_RESP_BAD_REQUEST;
+        w->response.code = (short)aclk_http_msg_v2(query_thr->client, query->callback_topic, query->msg_id,
+                                                   dt_ut, query->created, w->response.code,
+                                                   NULL, 0);
+        goto cleanup;
+    }
+
     web_client_timeout_checkpoint_set(w, query->timeout);
-    if(web_client_timeout_checkpoint_and_check(w, &t)) {
-        nd_log(NDLS_ACCESS, NDLP_ERR, "QUERY CANCELED: QUEUE TIME EXCEEDED %llu ms (LIMIT %d ms)", t / USEC_PER_MS, query->timeout);
+    if(web_client_timeout_checkpoint_and_check(w, &dt_ut)) {
+        nd_log(NDLS_ACCESS, NDLP_ERR,
+               "QUERY CANCELED: QUEUE TIME EXCEEDED %llu ms (LIMIT %d ms)",
+               dt_ut / USEC_PER_MS, query->timeout);
         retval = 1;
         w->response.code = HTTP_RESP_SERVICE_UNAVAILABLE;
         aclk_http_msg_v2_err(query_thr->client, query->callback_topic, query->msg_id, w->response.code, CLOUD_EC_SND_TIMEOUT, CLOUD_EMSG_SND_TIMEOUT, NULL, 0);
         goto cleanup;
     }
 
-    web_client_decode_path_and_query_string(w, query->data.http_api_v2.query);
     char *path = (char *)buffer_tostring(w->url_path_decoded);
 
     if (aclk_stats_enabled) {
@@ -135,48 +152,24 @@ static int http_api_v2(struct aclk_query_thread *query_thr, aclk_query_t query) 
     }
 
     w->response.code = (short)web_client_api_request_with_node_selection(localhost, w, path);
-    web_client_timeout_checkpoint_response_ready(w, &t);
-
-    if(buffer_strlen(w->response.data) > ACLK_MAX_WEB_RESPONSE_SIZE) {
-        buffer_flush(w->response.data);
-        buffer_strcat(w->response.data, "response is too big");
-        w->response.data->content_type = CT_TEXT_PLAIN;
-        w->response.code = HTTP_RESP_CONTENT_TOO_LONG;
-    }
+    web_client_timeout_checkpoint_response_ready(w, &dt_ut);
 
     if (aclk_stats_enabled) {
         ACLK_STATS_LOCK;
-        aclk_metrics_per_sample.cloud_q_process_total += t;
+        aclk_metrics_per_sample.cloud_q_process_total += dt_ut;
         aclk_metrics_per_sample.cloud_q_process_count++;
-        if (aclk_metrics_per_sample.cloud_q_process_max < t)
-            aclk_metrics_per_sample.cloud_q_process_max = t;
+        if (aclk_metrics_per_sample.cloud_q_process_max < dt_ut)
+            aclk_metrics_per_sample.cloud_q_process_max = dt_ut;
         ACLK_STATS_UNLOCK;
     }
 
     size = w->response.data->len;
     sent = size;
 
-    // check if gzip encoding can and should be used
-    if ((start = strstr((char *)query->data.http_api_v2.payload, WEB_HDR_ACCEPT_ENC))) {
-        start += strlen(WEB_HDR_ACCEPT_ENC);
-        end = strstr(start, "\x0D\x0A");
-        start = strstr(start, "gzip");
-
-        if (start && start < end) {
-            w->response.zstream.zalloc = Z_NULL;
-            w->response.zstream.zfree = Z_NULL;
-            w->response.zstream.opaque = Z_NULL;
-            if(deflateInit2(&w->response.zstream, web_gzip_level, Z_DEFLATED, 15 + 16, 8, web_gzip_strategy) == Z_OK) {
-                w->response.zinitialized = true;
-                w->response.zoutput = true;
-            } else
-                netdata_log_error("Failed to initialize zlib. Proceeding without compression.");
-        }
-    }
-
     if (w->response.data->len && w->response.zinitialized) {
         w->response.zstream.next_in = (Bytef *)w->response.data->buffer;
         w->response.zstream.avail_in = w->response.data->len;
+
         do {
             w->response.zstream.avail_out = NETDATA_WEB_RESPONSE_ZLIB_CHUNK_SIZE;
             w->response.zstream.next_out = w->response.zbuffer;
@@ -196,6 +189,7 @@ static int http_api_v2(struct aclk_query_thread *query_thr, aclk_query_t query) 
             memcpy(&z_buffer->buffer[z_buffer->len], w->response.zbuffer, bytes_to_cpy);
             z_buffer->len += bytes_to_cpy;
         } while(z_ret != Z_STREAM_END);
+
         // so that web_client_build_http_header
         // puts correct content length into header
         buffer_free(w->response.data);
@@ -221,7 +215,9 @@ static int http_api_v2(struct aclk_query_thread *query_thr, aclk_query_t query) 
     }
 
     // send msg.
-    w->response.code = aclk_http_msg_v2(query_thr->client, query->callback_topic, query->msg_id, t, query->created, w->response.code, local_buffer->buffer, local_buffer->len);
+    w->response.code = (short)aclk_http_msg_v2(query_thr->client, query->callback_topic, query->msg_id,
+        dt_ut, query->created, w->response.code,
+                                               local_buffer->buffer, local_buffer->len);
 
 cleanup:
     web_client_log_completed_request(w, false);

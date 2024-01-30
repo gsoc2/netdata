@@ -45,12 +45,14 @@ AutoReqProv: yes
 %endif
 
 # Disable go.d.plugin build on outdated golang distros
+%if 0
 %if 0%{?centos_ver:1}
 %if 0%{?centos_ver} >= 10 && 0%{?almalinux_ver:1} && 0%{?rocky_ver:1}
 %global _golang_build 1
 %else
 %global _golang_build 0
 %global _missing_build_ids_terminate_build 0
+%endif
 %endif
 %endif
 
@@ -263,10 +265,12 @@ BuildRequires: cups-devel
 # end - cups plugin dependencies
 
 # go.d.plugin dependencies
+%if 0%{?_golang_build}
 %if 0%{?suse_version}
 BuildRequires: go
 %else
 BuildRequires: golang
+%endif
 %endif
 # end - go.d.plugin plugin dependencies
 
@@ -993,7 +997,7 @@ fi
 %defattr(0750,root,netdata,0750)
 # CAP_NET_ADMIN needed for WireGuard collector
 # CAP_NET_RAW needed for ping collector
-%caps(cap_net_admin,cap_net_raw=eip) %{_libexecdir}/%{name}/plugins.d/%{go_name}
+%caps(cap_dac_read_search,cap_net_admin,cap_net_raw=eip) %{_libexecdir}/%{name}/plugins.d/%{go_name}
 %defattr(0644,root,netdata,0755)
 %{_libdir}/%{name}/conf.d/go.d.conf
 %{_libdir}/%{name}/conf.d/go.d

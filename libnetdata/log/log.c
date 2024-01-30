@@ -5,7 +5,6 @@
 #define SD_JOURNAL_SUPPRESS_LOCATION
 
 #include "../libnetdata.h"
-#include <daemon/main.h>
 
 #ifdef __FreeBSD__
 #include <sys/endian.h>
@@ -1117,9 +1116,25 @@ static __thread struct log_field thread_log_fields[_NDF_MAX] = {
                 .journal = "ND_SRC_TRANSPORT",
                 .logfmt = "src_transport",
         },
+        [NDF_ACCOUNT_ID] = {
+            .journal = "ND_ACCOUNT_ID",
+            .logfmt = "account",
+        },
+        [NDF_USER_NAME] = {
+            .journal = "ND_USER_NAME",
+            .logfmt = "user",
+        },
+        [NDF_USER_ROLE] = {
+            .journal = "ND_USER_ROLE",
+            .logfmt = "role",
+        },
+        [NDF_USER_ACCESS] = {
+            .journal = "ND_USER_PERMISSIONS",
+            .logfmt = "permissions",
+        },
         [NDF_SRC_IP] = {
-                .journal = "ND_SRC_IP",
-                .logfmt = "src_ip",
+            .journal = "ND_SRC_IP",
+            .logfmt = "src_ip",
         },
         [NDF_SRC_FORWARDED_HOST] = {
                 .journal = "ND_SRC_FORWARDED_HOST",
@@ -1361,11 +1376,12 @@ static void nd_logger_json(BUFFER *wb, struct log_field *fields, size_t fields_m
             case NDFT_DBL:
                 buffer_json_member_add_double(wb, key, fields[i].entry.dbl);
                 break;
-            case NDFT_UUID:{
-                char u[UUID_COMPACT_STR_LEN];
-                uuid_unparse_lower_compact(*fields[i].entry.uuid, u);
-                buffer_json_member_add_string(wb, key, u);
-            }
+            case NDFT_UUID:
+                if(!uuid_is_null(*fields[i].entry.uuid)) {
+                    char u[UUID_COMPACT_STR_LEN];
+                    uuid_unparse_lower_compact(*fields[i].entry.uuid, u);
+                    buffer_json_member_add_string(wb, key, u);
+                }
                 break;
             case NDFT_CALLBACK: {
                 if(!tmp)
@@ -1431,10 +1447,7 @@ static int64_t log_field_to_int64(struct log_field *lf) {
             break;
 
         case NDFT_CALLBACK:
-            if(!tmp)
-                tmp = buffer_create(0, NULL);
-            else
-                buffer_flush(tmp);
+            tmp = buffer_create(0, NULL);
 
             if(lf->entry.cb.formatter(tmp, lf->entry.cb.formatter_data))
                 s = buffer_tostring(tmp);
@@ -1495,10 +1508,7 @@ static uint64_t log_field_to_uint64(struct log_field *lf) {
             break;
 
         case NDFT_CALLBACK:
-            if(!tmp)
-                tmp = buffer_create(0, NULL);
-            else
-                buffer_flush(tmp);
+            tmp = buffer_create(0, NULL);
 
             if(lf->entry.cb.formatter(tmp, lf->entry.cb.formatter_data))
                 s = buffer_tostring(tmp);
@@ -1513,7 +1523,7 @@ static uint64_t log_field_to_uint64(struct log_field *lf) {
             return lf->entry.i64;
 
         case NDFT_DBL:
-            return lf->entry.dbl;
+            return (uint64_t) lf->entry.dbl;
     }
 
     if(s && *s)
@@ -1570,7 +1580,8 @@ static void priority_annotator(BUFFER *wb, const char *key, struct log_field *lf
     buffer_strcat(wb, nd_log_id2priority(pri));
 }
 
-static bool needs_quotes_for_logfmt(const char *s) {
+static bool needs_quotes_for_logfmt(const char *s)
+{
     static bool safe_for_logfmt[256] = {
             [' '] =  true, ['!'] =  true, ['"'] =  false, ['#'] =  true, ['$'] =  true, ['%'] =  true, ['&'] =  true,
             ['\''] = true, ['('] =  true, [')'] =  true, ['*'] =  true, ['+'] =  true, [','] =  true, ['-'] =  true,
@@ -1601,7 +1612,8 @@ static bool needs_quotes_for_logfmt(const char *s) {
     return false;
 }
 
-static void string_to_logfmt(BUFFER *wb, const char *s) {
+static void string_to_logfmt(BUFFER *wb, const char *s)
+{
     bool spaces = needs_quotes_for_logfmt(s);
 
     if(spaces)
@@ -1613,7 +1625,8 @@ static void string_to_logfmt(BUFFER *wb, const char *s) {
         buffer_fast_strcat(wb, "\"", 1);
 }
 
-static void nd_logger_logfmt(BUFFER *wb, struct log_field *fields, size_t fields_max) {
+static void nd_logger_logfmt(BUFFER *wb, struct log_field *fields, size_t fields_max)
+{
 
     //  --- FIELD_PARSER_VERSIONS ---
     //
@@ -1678,13 +1691,14 @@ static void nd_logger_logfmt(BUFFER *wb, struct log_field *fields, size_t fields
                     buffer_fast_strcat(wb, "=", 1);
                     buffer_print_netdata_double(wb, fields[i].entry.dbl);
                     break;
-                case NDFT_UUID: {
-                    char u[UUID_COMPACT_STR_LEN];
-                    uuid_unparse_lower_compact(*fields[i].entry.uuid, u);
-                    buffer_strcat(wb, key);
-                    buffer_fast_strcat(wb, "=", 1);
-                    buffer_fast_strcat(wb, u, sizeof(u) - 1);
-                }
+                case NDFT_UUID:
+                    if(!uuid_is_null(*fields[i].entry.uuid)) {
+                        char u[UUID_COMPACT_STR_LEN];
+                        uuid_unparse_lower_compact(*fields[i].entry.uuid, u);
+                        buffer_strcat(wb, key);
+                        buffer_fast_strcat(wb, "=", 1);
+                        buffer_fast_strcat(wb, u, sizeof(u) - 1);
+                    }
                     break;
                 case NDFT_CALLBACK: {
                     if(!tmp)
@@ -1753,32 +1767,34 @@ static bool nd_logger_journal_libsystemd(struct log_field *fields, size_t fields
 
         const char *key = fields[i].journal;
         char *value = NULL;
+        int rc = 0;
         switch (fields[i].entry.type) {
             case NDFT_TXT:
                 if(*fields[i].entry.txt)
-                    asprintf(&value, "%s=%s", key, fields[i].entry.txt);
+                    rc = asprintf(&value, "%s=%s", key, fields[i].entry.txt);
                 break;
             case NDFT_STR:
-                asprintf(&value, "%s=%s", key, string2str(fields[i].entry.str));
+                rc = asprintf(&value, "%s=%s", key, string2str(fields[i].entry.str));
                 break;
             case NDFT_BFR:
                 if(buffer_strlen(fields[i].entry.bfr))
-                    asprintf(&value, "%s=%s", key, buffer_tostring(fields[i].entry.bfr));
+                    rc = asprintf(&value, "%s=%s", key, buffer_tostring(fields[i].entry.bfr));
                 break;
             case NDFT_U64:
-                asprintf(&value, "%s=%" PRIu64, key, fields[i].entry.u64);
+                rc = asprintf(&value, "%s=%" PRIu64, key, fields[i].entry.u64);
                 break;
             case NDFT_I64:
-                asprintf(&value, "%s=%" PRId64, key, fields[i].entry.i64);
+                rc = asprintf(&value, "%s=%" PRId64, key, fields[i].entry.i64);
                 break;
             case NDFT_DBL:
-                asprintf(&value, "%s=%f", key, fields[i].entry.dbl);
+                rc = asprintf(&value, "%s=%f", key, fields[i].entry.dbl);
                 break;
-            case NDFT_UUID: {
-                char u[UUID_COMPACT_STR_LEN];
-                uuid_unparse_lower_compact(*fields[i].entry.uuid, u);
-                asprintf(&value, "%s=%s", key, u);
-            }
+            case NDFT_UUID:
+                if(!uuid_is_null(*fields[i].entry.uuid)) {
+                    char u[UUID_COMPACT_STR_LEN];
+                    uuid_unparse_lower_compact(*fields[i].entry.uuid, u);
+                    rc = asprintf(&value, "%s=%s", key, u);
+                }
                 break;
             case NDFT_CALLBACK: {
                 if(!tmp)
@@ -1786,15 +1802,15 @@ static bool nd_logger_journal_libsystemd(struct log_field *fields, size_t fields
                 else
                     buffer_flush(tmp);
                 if(fields[i].entry.cb.formatter(tmp, fields[i].entry.cb.formatter_data))
-                    asprintf(&value, "%s=%s", key, buffer_tostring(tmp));
+                    rc = asprintf(&value, "%s=%s", key, buffer_tostring(tmp));
             }
                 break;
             default:
-                asprintf(&value, "%s=%s", key, "UNHANDLED");
+                rc = asprintf(&value, "%s=%s", key, "UNHANDLED");
                 break;
         }
 
-        if (value) {
+        if (rc != -1 && value) {
             iov[iov_count].iov_base = value;
             iov[iov_count].iov_len = strlen(value);
             iov_count++;
@@ -1872,14 +1888,15 @@ static bool nd_logger_journal_direct(struct log_field *fields, size_t fields_max
                 buffer_print_netdata_double(wb, fields[i].entry.dbl);
                 buffer_putc(wb, '\n');
                 break;
-            case NDFT_UUID:{
-                char u[UUID_COMPACT_STR_LEN];
-                uuid_unparse_lower_compact(*fields[i].entry.uuid, u);
-                buffer_strcat(wb, key);
-                buffer_putc(wb, '=');
-                buffer_fast_strcat(wb, u, sizeof(u) - 1);
-                buffer_putc(wb, '\n');
-            }
+            case NDFT_UUID:
+                if(!uuid_is_null(*fields[i].entry.uuid)) {
+                    char u[UUID_COMPACT_STR_LEN];
+                    uuid_unparse_lower_compact(*fields[i].entry.uuid, u);
+                    buffer_strcat(wb, key);
+                    buffer_putc(wb, '=');
+                    buffer_fast_strcat(wb, u, sizeof(u) - 1);
+                    buffer_putc(wb, '\n');
+                }
                 break;
             case NDFT_CALLBACK: {
                 if(!tmp)
@@ -1921,7 +1938,7 @@ static bool nd_logger_journal_direct(struct log_field *fields, size_t fields_max
 // ----------------------------------------------------------------------------
 // syslog logger - uses logfmt
 
-static bool nd_logger_syslog(int priority, ND_LOG_FORMAT format, struct log_field *fields, size_t fields_max) {
+static bool nd_logger_syslog(int priority, ND_LOG_FORMAT format __maybe_unused, struct log_field *fields, size_t fields_max) {
     CLEAN_BUFFER *wb = buffer_create(1024, NULL);
 
     nd_logger_logfmt(wb, fields, fields_max);
@@ -2077,7 +2094,7 @@ static void nd_logger_merge_log_stack_to_thread_fields(void) {
             if((type == NDFT_TXT && (!e->txt || !*e->txt)) ||
                 (type == NDFT_BFR && (!e->bfr || !buffer_strlen(e->bfr))) ||
                 (type == NDFT_STR && !e->str) ||
-                (type == NDFT_UUID && !e->uuid) ||
+                (type == NDFT_UUID && (!e->uuid || uuid_is_null(*e->uuid))) ||
                 (type == NDFT_CALLBACK && !e->cb.formatter) ||
                 type == NDFT_UNSET)
                 continue;
@@ -2118,7 +2135,7 @@ static void nd_logger(const char *file, const char *function, const unsigned lon
         else if(thread_log_fields[NDF_LOG_SOURCE].entry.type == NDFT_U64)
             src = thread_log_fields[NDF_LOG_SOURCE].entry.u64;
 
-        if(src != source && src >= 0 && src < _NDLS_MAX) {
+        if(src != source && src < _NDLS_MAX) {
             source = src;
             output = nd_logger_select_output(source, &fp, &spinlock);
             if(output != NDLM_FILE && output != NDLM_JOURNAL && output != NDLM_SYSLOG)
@@ -2142,8 +2159,8 @@ static void nd_logger(const char *file, const char *function, const unsigned lon
     if(likely(!thread_log_fields[NDF_TID].entry.set))
         thread_log_fields[NDF_TID].entry = ND_LOG_FIELD_U64(NDF_TID, gettid());
 
+    char os_threadname[NETDATA_THREAD_NAME_MAX + 1];
     if(likely(!thread_log_fields[NDF_THREAD_TAG].entry.set)) {
-        char os_threadname[NETDATA_THREAD_NAME_MAX + 1];
         const char *thread_tag = netdata_thread_tag();
         if(!netdata_thread_tag_exists()) {
             if (!netdata_thread_tag_exists()) {
@@ -2232,7 +2249,8 @@ static ND_LOG_SOURCES nd_log_validate_source(ND_LOG_SOURCES source) {
 // ----------------------------------------------------------------------------
 // public API for loggers
 
-void netdata_logger(ND_LOG_SOURCES source, ND_LOG_FIELD_PRIORITY priority, const char *file, const char *function, unsigned long line, const char *fmt, ... ) {
+void netdata_logger(ND_LOG_SOURCES source, ND_LOG_FIELD_PRIORITY priority, const char *file, const char *function, unsigned long line, const char *fmt, ... )
+{
     int saved_errno = errno;
     source = nd_log_validate_source(source);
 
@@ -2290,9 +2308,17 @@ void netdata_logger_fatal( const char *file, const char *function, const unsigne
 
     char action_data[70+1];
     snprintfz(action_data, 70, "%04lu@%-10.10s:%-15.15s/%d", line, file, function, saved_errno);
-    char action_result[60+1];
 
-    const char *thread_tag = thread_log_fields[NDF_THREAD_TAG].entry.txt;
+    char os_threadname[NETDATA_THREAD_NAME_MAX + 1];
+    const char *thread_tag = netdata_thread_tag();
+    if(!netdata_thread_tag_exists()) {
+        if (!netdata_thread_tag_exists()) {
+            os_thread_get_current_name_np(os_threadname);
+            if ('\0' != os_threadname[0])
+                /* If it is not an empty string replace "MAIN" thread_tag */
+                thread_tag = os_threadname;
+        }
+    }
     if(!thread_tag)
         thread_tag = "UNKNOWN";
 
@@ -2304,8 +2330,8 @@ void netdata_logger_fatal( const char *file, const char *function, const unsigne
     if(strncmp(thread_tag, THREAD_TAG_STREAM_SENDER, strlen(THREAD_TAG_STREAM_SENDER)) == 0)
         tag_to_send = THREAD_TAG_STREAM_SENDER;
 
+    char action_result[60+1];
     snprintfz(action_result, 60, "%s:%s", program_name, tag_to_send);
-    send_statistics("FATAL", action_result, action_data);
 
 #ifdef HAVE_BACKTRACE
     int fd = nd_log.sources[NDLS_DAEMON].fd;
@@ -2324,7 +2350,7 @@ void netdata_logger_fatal( const char *file, const char *function, const unsigne
     abort();
 #endif
 
-    netdata_cleanup_and_exit(1);
+    netdata_cleanup_and_exit(1, "FATAL", action_result, action_data);
 }
 
 // ----------------------------------------------------------------------------
@@ -2403,7 +2429,8 @@ static bool nd_log_limit_reached(struct nd_log_source *source) {
                     source->limits.logs_per_period,
                     source->limits.throttle_period,
                     program_name,
-                    (int64_t)((source->limits.started_monotonic_ut + (source->limits.throttle_period * USEC_PER_SEC) - now_ut)) / USEC_PER_SEC);
+                    (int64_t)(((source->limits.started_monotonic_ut + (source->limits.throttle_period * USEC_PER_SEC) - now_ut)) / USEC_PER_SEC)
+            );
 
             if(source->pending_msg)
                 freez((void *)source->pending_msg);

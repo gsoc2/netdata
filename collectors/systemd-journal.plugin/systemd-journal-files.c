@@ -39,74 +39,74 @@ static bool journal_sd_id128_parse(const char *in, sd_id128_t *ret) {
     return false;
 }
 
-static void journal_file_get_header_from_journalctl(const char *filename, struct journal_file *jf) {
-    // unfortunately, our capabilities are not inheritted by journalctl
-    // so, it fails to give us the information we need.
+//static void journal_file_get_header_from_journalctl(const char *filename, struct journal_file *jf) {
+//    // unfortunately, our capabilities are not inheritted by journalctl
+//    // so, it fails to give us the information we need.
+//
+//    bool read_writer = false, read_head = false, read_tail = false;
+//
+//    char cmd[FILENAME_MAX * 2];
+//    snprintfz(cmd, sizeof(cmd), "journalctl --header --file '%s'", filename);
+//    CLEAN_BUFFER *wb = run_command_and_get_output_to_buffer(cmd, 1024);
+//    if(wb) {
+//        const char *s = buffer_tostring(wb);
+//
+//        const char *sequential_id_header = "Sequential Number ID:";
+//        const char *sequential_id_data = strcasestr(s, sequential_id_header);
+//        if(sequential_id_data) {
+//            sequential_id_data += strlen(sequential_id_header);
+//            if(journal_sd_id128_parse(sequential_id_data, &jf->first_writer_id))
+//                read_writer = true;
+//        }
+//
+//        const char *head_sequential_number_header = "Head sequential number:";
+//        const char *head_sequential_number_data = strcasestr(s, head_sequential_number_header);
+//        if(head_sequential_number_data) {
+//            head_sequential_number_data += strlen(head_sequential_number_header);
+//
+//            while(isspace(*head_sequential_number_data))
+//                head_sequential_number_data++;
+//
+//            if(isdigit(*head_sequential_number_data)) {
+//                jf->first_seqnum = strtoul(head_sequential_number_data, NULL, 10);
+//                if(jf->first_seqnum)
+//                    read_head = true;
+//            }
+//        }
+//
+//        const char *tail_sequential_number_header = "Tail sequential number:";
+//        const char *tail_sequential_number_data = strcasestr(s, tail_sequential_number_header);
+//        if(tail_sequential_number_data) {
+//            tail_sequential_number_data += strlen(tail_sequential_number_header);
+//
+//            while(isspace(*tail_sequential_number_data))
+//                tail_sequential_number_data++;
+//
+//            if(isdigit(*tail_sequential_number_data)) {
+//                jf->last_seqnum = strtoul(tail_sequential_number_data, NULL, 10);
+//                if(jf->last_seqnum)
+//                    read_tail = true;
+//            }
+//        }
+//
+//        if(read_head && read_tail && jf->last_seqnum > jf->first_seqnum)
+//            jf->messages_in_file = jf->last_seqnum - jf->first_seqnum;
+//    }
+//
+//    if(!jf->logged_journalctl_failure && (!read_head || !read_tail)) {
+//
+//        nd_log(NDLS_COLLECTORS, NDLP_NOTICE,
+//               "Failed to read %s%s%s from journalctl's output on filename '%s', using the command: %s",
+//               read_writer?"":"writer id,",
+//               read_head?"":"head id,",
+//               read_tail?"":"tail id,",
+//               filename, cmd);
+//
+//        jf->logged_journalctl_failure = true;
+//    }
+//}
 
-    bool read_writer = false, read_head = false, read_tail = false;
-
-    char cmd[FILENAME_MAX * 2];
-    snprintfz(cmd, sizeof(cmd), "journalctl --header --file '%s'", filename);
-    CLEAN_BUFFER *wb = run_command_and_get_output_to_buffer(cmd, 1024);
-    if(wb) {
-        const char *s = buffer_tostring(wb);
-
-        const char *sequential_id_header = "Sequential Number ID:";
-        const char *sequential_id_data = strcasestr(s, sequential_id_header);
-        if(sequential_id_data) {
-            sequential_id_data += strlen(sequential_id_header);
-            if(journal_sd_id128_parse(sequential_id_data, &jf->first_writer_id))
-                read_writer = true;
-        }
-
-        const char *head_sequential_number_header = "Head sequential number:";
-        const char *head_sequential_number_data = strcasestr(s, head_sequential_number_header);
-        if(head_sequential_number_data) {
-            head_sequential_number_data += strlen(head_sequential_number_header);
-
-            while(isspace(*head_sequential_number_data))
-                head_sequential_number_data++;
-
-            if(isdigit(*head_sequential_number_data)) {
-                jf->first_seqnum = strtoul(head_sequential_number_data, NULL, 10);
-                if(jf->first_seqnum)
-                    read_head = true;
-            }
-        }
-
-        const char *tail_sequential_number_header = "Tail sequential number:";
-        const char *tail_sequential_number_data = strcasestr(s, tail_sequential_number_header);
-        if(tail_sequential_number_data) {
-            tail_sequential_number_data += strlen(tail_sequential_number_header);
-
-            while(isspace(*tail_sequential_number_data))
-                tail_sequential_number_data++;
-
-            if(isdigit(*tail_sequential_number_data)) {
-                jf->last_seqnum = strtoul(tail_sequential_number_data, NULL, 10);
-                if(jf->last_seqnum)
-                    read_tail = true;
-            }
-        }
-
-        if(read_head && read_tail && jf->last_seqnum > jf->first_seqnum)
-            jf->messages_in_file = jf->last_seqnum - jf->first_seqnum;
-    }
-
-    if(!jf->logged_journalctl_failure && (!read_head || !read_tail)) {
-
-        nd_log(NDLS_COLLECTORS, NDLP_NOTICE,
-               "Failed to read %s%s%s from journalctl's output on filename '%s', using the command: %s",
-               read_writer?"":"writer id,",
-               read_head?"":"head id,",
-               read_tail?"":"tail id,",
-               filename, cmd);
-
-        jf->logged_journalctl_failure = true;
-    }
-}
-
-usec_t journal_file_update_annotation_boot_id(sd_journal *j, struct journal_file *jf, const char *boot_id) {
+usec_t journal_file_update_annotation_boot_id(sd_journal *j, struct journal_file *jf __maybe_unused, const char *boot_id) {
     usec_t ut = UINT64_MAX;
     int r;
 
@@ -447,7 +447,7 @@ static void files_registry_insert_cb(const DICTIONARY_ITEM *item, void *value, v
            jf->filename);
 }
 
-static bool files_registry_conflict_cb(const DICTIONARY_ITEM *item, void *old_value, void *new_value, void *data __maybe_unused) {
+static bool files_registry_conflict_cb(const DICTIONARY_ITEM *item __maybe_unused, void *old_value, void *new_value, void *data __maybe_unused) {
     struct journal_file *jf = old_value;
     struct journal_file *njf = new_value;
 
@@ -639,7 +639,7 @@ void journal_directory_scan_recursively(DICTIONARY *files, DICTIONARY *dirs, con
             if(files)
                 dictionary_set(files, full_path, NULL, 0);
 
-            send_newline_and_flush();
+            send_newline_and_flush(&stdout_mutex);
         }
         else if (entry->d_type == DT_LNK) {
             struct stat info;
@@ -657,7 +657,7 @@ void journal_directory_scan_recursively(DICTIONARY *files, DICTIONARY *dirs, con
                 if(files)
                     dictionary_set(files, full_path, NULL, 0);
 
-                send_newline_and_flush();
+                send_newline_and_flush(&stdout_mutex);
             }
         }
     }
@@ -715,7 +715,7 @@ void journal_files_registry_update(void) {
 
         for(unsigned i = 0; i < MAX_JOURNAL_DIRECTORIES; i++) {
             if(!journal_directories[i].path) break;
-            journal_directory_scan_recursively(files, dirs, journal_directories[i].path, 0);
+            journal_directory_scan_recursively(files, dirs, string2str(journal_directories[i].path), 0);
         }
 
         const char **array = mallocz(sizeof(const char *) * dictionary_entries(files));
@@ -801,7 +801,7 @@ int journal_file_dict_items_forward_compar(const void *a, const void *b) {
     return -journal_file_dict_items_backward_compar(a, b);
 }
 
-static bool boot_id_conflict_cb(const DICTIONARY_ITEM *item, void *old_value, void *new_value, void *data __maybe_unused) {
+static bool boot_id_conflict_cb(const DICTIONARY_ITEM *item __maybe_unused, void *old_value, void *new_value, void *data __maybe_unused) {
     usec_t *old_usec = old_value;
     usec_t *new_usec = new_value;
 
@@ -819,15 +819,15 @@ void journal_init_files_and_directories(void) {
     // ------------------------------------------------------------------------
     // setup the journal directories
 
-    journal_directories[d++].path = strdupz("/run/log/journal");
-    journal_directories[d++].path = strdupz("/var/log/journal");
+    journal_directories[d++].path = string_strdupz("/run/log/journal");
+    journal_directories[d++].path = string_strdupz("/var/log/journal");
 
     if(*netdata_configured_host_prefix) {
         char path[PATH_MAX];
         snprintfz(path, sizeof(path), "%s/var/log/journal", netdata_configured_host_prefix);
-        journal_directories[d++].path = strdupz(path);
+        journal_directories[d++].path = string_strdupz(path);
         snprintfz(path, sizeof(path), "%s/run/log/journal", netdata_configured_host_prefix);
-        journal_directories[d++].path = strdupz(path);
+        journal_directories[d++].path = string_strdupz(path);
     }
 
     // terminate the list

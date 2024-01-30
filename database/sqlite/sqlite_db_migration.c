@@ -156,14 +156,14 @@ const char *database_migrate_v13_v14[] = {
 static int do_migration_v1_v2(sqlite3 *database)
 {
     if (table_exists_in_database(database, "host") && !column_exists_in_table(database, "host", "hops"))
-        return init_database_batch(database, &database_migrate_v1_v2[0]);
+        return init_database_batch(database, &database_migrate_v1_v2[0], "meta_migrate");
     return 0;
 }
 
 static int do_migration_v2_v3(sqlite3 *database)
 {
     if (table_exists_in_database(database, "host") && !column_exists_in_table(database, "host", "memory_mode"))
-        return init_database_batch(database, &database_migrate_v2_v3[0]);
+        return init_database_batch(database, &database_migrate_v2_v3[0], "meta_migrate");
     return 0;
 }
 
@@ -198,12 +198,12 @@ static int do_migration_v3_v4(sqlite3 *database)
 
 static int do_migration_v4_v5(sqlite3 *database)
 {
-    return init_database_batch(database, &database_migrate_v4_v5[0]);
+    return init_database_batch(database, &database_migrate_v4_v5[0], "meta_migrate");
 }
 
 static int do_migration_v5_v6(sqlite3 *database)
 {
-    return init_database_batch(database, &database_migrate_v5_v6[0]);
+    return init_database_batch(database, &database_migrate_v5_v6[0], "meta_migrate");
 }
 
 static int do_migration_v6_v7(sqlite3 *database)
@@ -341,14 +341,14 @@ static int do_migration_v8_v9(sqlite3 *database)
 static int do_migration_v9_v10(sqlite3 *database)
 {
     if (table_exists_in_database(database, "alert_hash") && !column_exists_in_table(database, "alert_hash", "chart_labels"))
-        return init_database_batch(database, &database_migrate_v9_v10[0]);
+        return init_database_batch(database, &database_migrate_v9_v10[0], "meta_migrate");
     return 0;
 }
 
 static int do_migration_v10_v11(sqlite3 *database)
 {
     if (table_exists_in_database(database, "health_log") && !column_exists_in_table(database, "health_log", "chart_name"))
-        return init_database_batch(database, &database_migrate_v10_v11[0]);
+        return init_database_batch(database, &database_migrate_v10_v11[0], "meta_migrate");
 
     return 0;
 }
@@ -360,7 +360,7 @@ static int do_migration_v11_v12(sqlite3 *database)
 
     if (table_exists_in_database(database, "health_log_detail") && !column_exists_in_table(database, "health_log_detail", "summary") &&
         table_exists_in_database(database, "alert_hash") && !column_exists_in_table(database, "alert_hash", "summary"))
-        rc = init_database_batch(database, &database_migrate_v11_v12[0]);
+        rc = init_database_batch(database, &database_migrate_v11_v12[0], "meta_migrate");
 
     if (!rc)
         sqlite3_exec_monitored(database, MIGR_11_12_UPD_HEALTH_LOG_DETAIL, 0, 0, NULL);
@@ -382,14 +382,49 @@ static int do_migration_v14_v15(sqlite3 *database)
     }
 
     BUFFER *wb = buffer_create(128, NULL);
-    while (sqlite3_step_monitored(res) == SQLITE_ROW)
-        buffer_sprintf(wb, "DROP INDEX IF EXISTS %s", (char *) sqlite3_column_text(res, 0));
+    size_t count = 0;
+    while (sqlite3_step_monitored(res) == SQLITE_ROW) {
+        buffer_sprintf(wb, "DROP INDEX IF EXISTS %s; ", (char *)sqlite3_column_text(res, 0));
+        count++;
+    }
 
     rc = sqlite3_finalize(res);
     if (unlikely(rc != SQLITE_OK))
         error_report("Failed to finalize statement when dropping unused indices, rc = %d", rc);
 
-    (void) db_execute(database, buffer_tostring(wb));
+    if (count)
+        (void) db_execute(database, buffer_tostring(wb));
+
+    buffer_free(wb);
+    return 0;
+}
+
+static int do_migration_v15_v16(sqlite3 *database)
+{
+    char sql[256];
+
+    int rc;
+    sqlite3_stmt *res = NULL;
+    snprintfz(sql, sizeof(sql) - 1, "SELECT name FROM sqlite_schema WHERE type = \"table\" AND name LIKE \"aclk_alert_%%\"");
+    rc = sqlite3_prepare_v2(database, sql, -1, &res, 0);
+    if (rc != SQLITE_OK) {
+        error_report("Failed to prepare statement to drop unused indices");
+        return 1;
+    }
+
+    BUFFER *wb = buffer_create(128, NULL);
+    size_t count = 0;
+    while (sqlite3_step_monitored(res) == SQLITE_ROW) {
+        buffer_sprintf(wb, "ANALYZE %s ; ", (char *)sqlite3_column_text(res, 0));
+        count++;
+    }
+
+    rc = sqlite3_finalize(res);
+    if (unlikely(rc != SQLITE_OK))
+        error_report("Failed to finalize statement when running ANALYZE on aclk_alert_tables, rc = %d", rc);
+
+    if (count)
+        (void) db_execute(database, buffer_tostring(wb));
 
     buffer_free(wb);
     return 0;
@@ -400,12 +435,12 @@ static int do_migration_v12_v13(sqlite3 *database)
     int rc = 0;
 
     if (table_exists_in_database(database, "health_log_detail") && !column_exists_in_table(database, "health_log_detail", "summary")) {
-        rc = init_database_batch(database, &database_migrate_v12_v13_detail[0]);
+        rc = init_database_batch(database, &database_migrate_v12_v13_detail[0], "meta_migrate");
         sqlite3_exec_monitored(database, MIGR_11_12_UPD_HEALTH_LOG_DETAIL, 0, 0, NULL);
     }
 
     if (table_exists_in_database(database, "alert_hash") && !column_exists_in_table(database, "alert_hash", "summary"))
-        rc = init_database_batch(database, &database_migrate_v12_v13_hash[0]);
+        rc = init_database_batch(database, &database_migrate_v12_v13_hash[0], "meta_migrate");
 
     return rc;
 }
@@ -413,7 +448,7 @@ static int do_migration_v12_v13(sqlite3 *database)
 static int do_migration_v13_v14(sqlite3 *database)
 {
     if (table_exists_in_database(database, "host") && !column_exists_in_table(database, "host", "last_connected"))
-        return init_database_batch(database, &database_migrate_v13_v14[0]);
+        return init_database_batch(database, &database_migrate_v13_v14[0], "meta_migrate");
 
     return 0;
 }
@@ -431,7 +466,7 @@ const char *database_ml_migrate_v1_v2[] = {
 static int do_ml_migration_v1_v2(sqlite3 *database)
 {
     if (get_auto_vaccum(database) != 2)
-        return init_database_batch(database, &database_ml_migrate_v1_v2[0]);
+        return init_database_batch(database, &database_ml_migrate_v1_v2[0], "ml_migrate");
     return 0;
 }
 
@@ -491,6 +526,7 @@ DATABASE_FUNC_MIGRATION_LIST migration_action[] = {
     {.name = "v12 to v13",  .func = do_migration_v12_v13},
     {.name = "v13 to v14",  .func = do_migration_v13_v14},
     {.name = "v14 to v15",  .func = do_migration_v14_v15},
+    {.name = "v15 to v16",  .func = do_migration_v15_v16},
     // the terminator of this array
     {.name = NULL, .func = NULL}
 };

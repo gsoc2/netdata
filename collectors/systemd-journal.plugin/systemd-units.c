@@ -1207,19 +1207,19 @@ static void systemd_unit_priority(UnitInfo *u, size_t units) {
     u->prio = (prio * units) + u->prio;
 }
 
-#define if_less(current, max, target) ({                \
-    typeof(current) _wanted = (current);                \
-    if((current) < (target))                            \
-        _wanted = (target) > (max) ? (max) : (target);  \
-    _wanted;                                            \
-})
+static inline FACET_ROW_SEVERITY if_less(FACET_ROW_SEVERITY current, FACET_ROW_SEVERITY max, FACET_ROW_SEVERITY target) {
+    FACET_ROW_SEVERITY wanted = current;
+    if(current < target)
+        wanted = target > max ? max : target;
+    return wanted;
+}
 
-#define if_normal(current, max, target) ({              \
-    typeof(current) _wanted = (current);                \
-    if((current) == FACET_ROW_SEVERITY_NORMAL)          \
-        _wanted = (target) > (max) ? (max) : (target);  \
-    _wanted;                                            \
-})
+static inline FACET_ROW_SEVERITY if_normal(FACET_ROW_SEVERITY current, FACET_ROW_SEVERITY max, FACET_ROW_SEVERITY target) {
+    FACET_ROW_SEVERITY wanted = current;
+    if(current == FACET_ROW_SEVERITY_NORMAL)
+        wanted = target > max ? max : target;
+    return wanted;
+}
 
 FACET_ROW_SEVERITY system_unit_severity(UnitInfo *u) {
     FACET_ROW_SEVERITY severity, max_severity;
@@ -1596,7 +1596,10 @@ void systemd_units_assign_priority(UnitInfo *base) {
     }
 }
 
-void function_systemd_units(const char *transaction, char *function, usec_t *stop_monotonic_ut __maybe_unused, bool *cancelled __maybe_unused) {
+void function_systemd_units(const char *transaction, char *function,
+                            usec_t *stop_monotonic_ut __maybe_unused, bool *cancelled __maybe_unused,
+                            BUFFER *payload __maybe_unused, HTTP_ACCESS access __maybe_unused,
+                            const char *source __maybe_unused, void *data __maybe_unused) {
     char *words[SYSTEMD_UNITS_MAX_PARAMS] = { NULL };
     size_t num_words = quoted_strings_splitter_pluginsd(function, words, SYSTEMD_UNITS_MAX_PARAMS);
     for(int i = 1; i < SYSTEMD_UNITS_MAX_PARAMS ;i++) {
@@ -1829,7 +1832,7 @@ void function_systemd_units(const char *transaction, char *function, usec_t *sto
                 case SD_BUS_TYPE_UINT32:
                 case SD_BUS_TYPE_INT64:
                 case SD_BUS_TYPE_UINT64: {
-                    double m;
+                    double m = 0.0;
                     if(unit_attributes[i].value_type == SD_BUS_TYPE_UINT64)
                         m = (double)max[i].uint64;
                     else if(unit_attributes[i].value_type == SD_BUS_TYPE_INT64)

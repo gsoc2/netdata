@@ -309,7 +309,7 @@ static bool service_wait_exit(SERVICE_TYPE service, usec_t timeout_ut) {
 
 void web_client_cache_destroy(void);
 
-void netdata_cleanup_and_exit(int ret) {
+void netdata_cleanup_and_exit(int ret, const char *action, const char *action_result, const char *action_data) {
     usec_t started_ut = now_monotonic_usec();
     usec_t last_ut = started_ut;
     const char *prev_msg = NULL;
@@ -318,7 +318,13 @@ void netdata_cleanup_and_exit(int ret) {
     nd_log_limits_unlimited();
     netdata_log_info("NETDATA SHUTDOWN: initializing shutdown with code %d...", ret);
 
-    send_statistics("EXIT", ret?"ERROR":"OK","-");
+    // send the stat from our caller
+    analytics_statistic_t statistic = { action, action_result, action_data };
+    analytics_statistic_send(&statistic);
+
+    // notify we are exiting
+    statistic = (analytics_statistic_t) {"EXIT", ret?"ERROR":"OK","-"};
+    analytics_statistic_send(&statistic);
 
     delta_shutdown_time("create shutdown file");
 
@@ -350,6 +356,12 @@ void netdata_cleanup_and_exit(int ret) {
             | SERVICE_ACLK
             | SERVICE_ACLKSYNC
             );
+
+    delta_shutdown_time("stop maintenance thread");
+
+    timeout = !service_wait_exit(
+        SERVICE_MAINTENANCE
+        , 3 * USEC_PER_SEC);
 
     delta_shutdown_time("stop replication, exporters, health and web servers threads");
 
@@ -388,19 +400,9 @@ void netdata_cleanup_and_exit(int ret) {
             SERVICE_CONTEXT
             , 3 * USEC_PER_SEC);
 
-    delta_shutdown_time("stop maintenance thread");
-
-    timeout = !service_wait_exit(
-            SERVICE_MAINTENANCE
-            , 3 * USEC_PER_SEC);
-
     delta_shutdown_time("clear web client cache");
 
     web_client_cache_destroy();
-
-    delta_shutdown_time("clean rrdhost database");
-
-    rrdhost_cleanup_all();
 
     delta_shutdown_time("stop aclk threads");
 
@@ -475,6 +477,8 @@ void netdata_cleanup_and_exit(int ret) {
             delta_shutdown_time("stop dbengine tiers");
             for (size_t tier = 0; tier < storage_tiers; tier++)
                 rrdeng_exit(multidb_ctx[tier]);
+
+            rrdeng_enq_cmd(NULL, RRDENG_OPCODE_SHUTDOWN_EVLOOP, NULL, NULL, STORAGE_PRIORITY_BEST_EFFORT, NULL, NULL);
         }
 #endif
     }
@@ -808,6 +812,7 @@ int help(int exitcode) {
             "  -W unittest              Run internal unittests and exit.\n\n"
             "  -W sqlite-meta-recover   Run recovery on the metadata database and exit.\n\n"
             "  -W sqlite-compact        Reclaim metadata database unused space and exit.\n\n"
+            "  -W sqlite-analyze        Run update statistics and exit.\n\n"
 #ifdef ENABLE_DBENGINE
             "  -W createdataset=N       Create a DB engine dataset of N seconds and exit.\n\n"
             "  -W stresstest=A,B,C,D,E,F,G\n"
@@ -1096,7 +1101,7 @@ static int get_hostname(char *buf, size_t buf_size) {
         char filename[FILENAME_MAX + 1];
         snprintfz(filename, FILENAME_MAX, "%s/etc/hostname", netdata_configured_host_prefix);
 
-        if (!read_file(filename, buf, buf_size)) {
+        if (!read_txt_file(filename, buf, buf_size)) {
             trim(buf);
             return 0;
         }
@@ -1112,7 +1117,7 @@ static void get_netdata_configured_variables() {
     // get the hostname
 
     netdata_configured_host_prefix = config_get(CONFIG_SECTION_GLOBAL, "host access prefix", "");
-    verify_netdata_host_prefix();
+    verify_netdata_host_prefix(true);
 
     char buf[HOSTNAME_MAX + 1];
     if (get_hostname(buf, HOSTNAME_MAX))
@@ -1221,7 +1226,7 @@ static void get_netdata_configured_variables() {
 #else
     if (default_rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE) {
        error_report("RRD_MEMORY_MODE_DBENGINE is not supported in this platform. The agent will use db mode 'save' instead.");
-       default_rrd_memory_mode = RRD_MEMORY_MODE_SAVE;
+       default_rrd_memory_mode = RRD_MEMORY_MODE_RAM;
     }
 #endif
 
@@ -1365,12 +1370,6 @@ int get_system_info(struct rrdhost_system_info *system_info) {
     return 0;
 }
 
-void set_silencers_filename() {
-    char filename[FILENAME_MAX + 1];
-    snprintfz(filename, FILENAME_MAX, "%s/health.silencers.json", netdata_configured_varlib_dir);
-    silencers_filename = config_get(CONFIG_SECTION_HEALTH, "silencers file", filename);
-}
-
 /* Any config setting that can be accessed without a default value i.e. configget(...,...,NULL) *MUST*
    be set in this procedure to be called in all the relevant code paths.
 */
@@ -1396,6 +1395,24 @@ void bearer_tokens_init(void);
 int unittest_rrdpush_compressions(void);
 int uuid_unittest(void);
 int progress_unittest(void);
+int dyncfg_unittest(void);
+
+int unittest_prepare_rrd(char **user) {
+    post_conf_load(user);
+    get_netdata_configured_variables();
+    default_rrd_update_every = 1;
+    default_rrd_memory_mode = RRD_MEMORY_MODE_RAM;
+    health_plugin_disable();
+    storage_tiers = 1;
+    registry_init();
+    if(rrd_init("unittest", NULL, true)) {
+        fprintf(stderr, "rrd_init failed for unittest\n");
+        return 1;
+    }
+    default_rrdpush_enabled = 0;
+
+    return 0;
+}
 
 int main(int argc, char **argv) {
     // initialize the system clocks
@@ -1496,11 +1513,11 @@ int main(int argc, char **argv) {
 #ifdef ENABLE_DBENGINE
                         char* createdataset_string = "createdataset=";
                         char* stresstest_string = "stresstest=";
-#endif
 
                         if(strcmp(optarg, "pgd-tests") == 0) {
                             return pgd_test(argc, argv);
                         }
+#endif
 
                         if(strcmp(optarg, "sqlite-meta-recover") == 0) {
                             sql_init_database(DB_CHECK_RECOVER, 0);
@@ -1512,52 +1529,36 @@ int main(int argc, char **argv) {
                             return 0;
                         }
 
+                        if(strcmp(optarg, "sqlite-analyze") == 0) {
+                            sql_init_database(DB_CHECK_ANALYZE, 0);
+                            return 0;
+                        }
+
                         if(strcmp(optarg, "unittest") == 0) {
                             unittest_running = true;
 
-                            if (pluginsd_parser_unittest())
-                                return 1;
+                            if (pluginsd_parser_unittest()) return 1;
+                            if (unit_test_static_threads()) return 1;
+                            if (unit_test_buffer()) return 1;
+                            if (unit_test_str2ld()) return 1;
+                            if (buffer_unittest()) return 1;
+                            if (unit_test_bitmaps()) return 1;
 
-                            if (unit_test_static_threads())
-                                return 1;
-                            if (unit_test_buffer())
-                                return 1;
-                            if (unit_test_str2ld())
-                                return 1;
-                            if (buffer_unittest())
-                                return 1;
-                            if (unit_test_bitmaps())
-                                return 1;
                             // No call to load the config file on this code-path
-                            post_conf_load(&user);
-                            get_netdata_configured_variables();
-                            default_rrd_update_every = 1;
-                            default_rrd_memory_mode = RRD_MEMORY_MODE_RAM;
-                            default_health_enabled = 0;
-                            storage_tiers = 1;
-                            registry_init();
-                            if(rrd_init("unittest", NULL, true)) {
-                                fprintf(stderr, "rrd_init failed for unittest\n");
-                                return 1;
-                            }
-                            default_rrdpush_enabled = 0;
-                            if(run_all_mockup_tests()) return 1;
-                            if(unit_test_storage()) return 1;
+                            if (unittest_prepare_rrd(&user)) return 1;
+                            if (run_all_mockup_tests()) return 1;
+                            if (unit_test_storage()) return 1;
 #ifdef ENABLE_DBENGINE
-                            if(test_dbengine()) return 1;
+                            if (test_dbengine()) return 1;
 #endif
-                            if(test_sqlite()) return 1;
-                            if(string_unittest(10000)) return 1;
-                            if (dictionary_unittest(10000))
-                                return 1;
-                            if(aral_unittest(10000))
-                                return 1;
-                            if (rrdlabels_unittest())
-                                return 1;
-                            if (ctx_unittest())
-                                return 1;
-                            if (uuid_unittest())
-                                return 1;
+                            if (test_sqlite()) return 1;
+                            if (string_unittest(10000)) return 1;
+                            if (dictionary_unittest(10000)) return 1;
+                            if (aral_unittest(10000)) return 1;
+                            if (rrdlabels_unittest()) return 1;
+                            if (ctx_unittest()) return 1;
+                            if (uuid_unittest()) return 1;
+                            if (dyncfg_unittest()) return 1;
                             fprintf(stderr, "\n\nALL TESTS PASSED\n\n");
                             return 0;
                         }
@@ -1624,6 +1625,12 @@ int main(int argc, char **argv) {
                         else if(strcmp(optarg, "progresstest") == 0) {
                             unittest_running = true;
                             return progress_unittest();
+                        }
+                        else if(strcmp(optarg, "dyncfgtest") == 0) {
+                            unittest_running = true;
+                            if(unittest_prepare_rrd(&user))
+                                return 1;
+                            return dyncfg_unittest();
                         }
                         else if(strncmp(optarg, createdataset_string, strlen(createdataset_string)) == 0) {
                             optarg += strlen(createdataset_string);
@@ -1999,7 +2006,7 @@ int main(int argc, char **argv) {
         // --------------------------------------------------------------------
         // This is the safest place to start the SILENCERS structure
 
-        set_silencers_filename();
+        health_set_silencers_filename();
         health_initialize_global_silencers();
 
         // --------------------------------------------------------------------
@@ -2025,6 +2032,15 @@ int main(int argc, char **argv) {
 
         // setup threads configs
         default_stacksize = netdata_threads_init();
+
+#ifdef NETDATA_INTERNAL_CHECKS
+        config_set_boolean(CONFIG_SECTION_PLUGINS, "netdata monitoring", true);
+        config_set_boolean(CONFIG_SECTION_PLUGINS, "netdata monitoring extended", true);
+#endif
+
+        if(config_get_boolean(CONFIG_SECTION_PLUGINS, "netdata monitoring extended", false))
+            // this has to run before starting any other threads that use workers
+            workers_utilization_enable();
 
         for (i = 0; static_threads[i].name != NULL ; i++) {
             struct netdata_static_thread *st = &static_threads[i];
@@ -2055,9 +2071,9 @@ int main(int argc, char **argv) {
 
 #ifdef ENABLE_H2O
         delta_startup_time("initialize h2o server");
-        for (int i = 0; static_threads[i].name; i++) {
-            if (static_threads[i].start_routine == h2o_main)
-                static_threads[i].enabled = httpd_is_enabled();
+        for (int t = 0; static_threads[t].name; t++) {
+            if (static_threads[t].start_routine == h2o_main)
+                static_threads[t].enabled = httpd_is_enabled();
         }
 #endif
     }
@@ -2093,7 +2109,7 @@ int main(int argc, char **argv) {
 
     setenv("HOME", netdata_configured_home_dir, 1);
 
-    dyn_conf_init();
+    dyncfg_init(true);
 
     netdata_log_info("netdata started on pid %d.", getpid());
 
@@ -2205,11 +2221,16 @@ int main(int argc, char **argv) {
     netdata_log_info("NETDATA STARTUP: completed in %llu ms. Enjoy real-time performance monitoring!", (ready_ut - started_ut) / USEC_PER_MS);
     netdata_ready = true;
 
-    send_statistics("START", "-",  "-");
-    if (crash_detected)
-        send_statistics("CRASH", "-", "-");
-    if (incomplete_shutdown_detected)
-        send_statistics("INCOMPLETE_SHUTDOWN", "-", "-");
+    analytics_statistic_t start_statistic = { "START", "-",  "-" };
+    analytics_statistic_send(&start_statistic);
+    if (crash_detected) {
+        analytics_statistic_t crash_statistic = { "CRASH", "-",  "-" };
+        analytics_statistic_send(&crash_statistic);
+    }
+    if (incomplete_shutdown_detected) {
+        analytics_statistic_t incomplete_shutdown_statistic = { "INCOMPLETE_SHUTDOWN", "-", "-" };
+        analytics_statistic_send(&incomplete_shutdown_statistic);
+    }
 
     //check if ANALYTICS needs to start
     if (netdata_anonymous_statistics_enabled == 1) {
@@ -2231,7 +2252,9 @@ int main(int argc, char **argv) {
     char filename[FILENAME_MAX + 1];
     snprintfz(filename, FILENAME_MAX, "%s/.aclk_report_sent", netdata_configured_varlib_dir);
     if (netdata_anonymous_statistics_enabled > 0 && access(filename, F_OK)) { // -1 -> not initialized
-        send_statistics("ACLK_DISABLED", "-", "-");
+        analytics_statistic_t statistic = { "ACLK_DISABLED", "-", "-" };
+        analytics_statistic_send(&statistic);
+
         int fd = open(filename, O_WRONLY | O_CREAT | O_TRUNC, 444);
         if (fd == -1)
             netdata_log_error("Cannot create file '%s'. Please fix this.", filename);

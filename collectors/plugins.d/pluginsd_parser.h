@@ -11,7 +11,7 @@
 #define WORKER_RECEIVER_JOB_REPLICATION_COMPLETION (WORKER_PARSER_FIRST_JOB - 3)
 
 // this controls the max response size of a function
-#define PLUGINSD_MAX_DEFERRED_SIZE (20 * 1024 * 1024)
+#define PLUGINSD_MAX_DEFERRED_SIZE (100 * 1024 * 1024)
 
 #define PLUGINSD_MIN_RRDSET_POINTERS_CACHE 1024
 
@@ -112,7 +112,7 @@ typedef struct parser {
 
     struct buffered_reader reader;
     struct line_splitter line;
-    PARSER_KEYWORD *keyword;
+    const PARSER_KEYWORD *keyword;
 
     struct {
         const char *end_keyword;
@@ -137,7 +137,7 @@ void parser_init_repertoire(PARSER *parser, PARSER_REPERTOIRE repertoire);
 void parser_destroy(PARSER *working_parser);
 void pluginsd_cleanup_v2(PARSER *parser);
 void pluginsd_keywords_init(PARSER *parser, PARSER_REPERTOIRE repertoire);
-PARSER_RC parser_execute(PARSER *parser, PARSER_KEYWORD *keyword, char **words, size_t num_words);
+PARSER_RC parser_execute(PARSER *parser, const PARSER_KEYWORD *keyword, char **words, size_t num_words);
 
 static inline int find_first_keyword(const char *src, char *dst, int dst_size, bool *isspace_map) {
     const char *s = src, *keyword_start;
@@ -153,10 +153,10 @@ static inline int find_first_keyword(const char *src, char *dst, int dst_size, b
     return dst_size == 0 ? 0 : (int) (s - keyword_start);
 }
 
-PARSER_KEYWORD *gperf_lookup_keyword(register const char *str, register size_t len);
+const PARSER_KEYWORD *gperf_lookup_keyword(register const char *str, register size_t len);
 
-static inline PARSER_KEYWORD *parser_find_keyword(PARSER *parser, const char *command) {
-    PARSER_KEYWORD *t = gperf_lookup_keyword(command, strlen(command));
+static inline const PARSER_KEYWORD *parser_find_keyword(PARSER *parser, const char *command) {
+    const PARSER_KEYWORD *t = gperf_lookup_keyword(command, strlen(command));
     if(t && (t->repertoire & parser->repertoire))
         return t;
 
@@ -231,7 +231,7 @@ static inline int parser_action(PARSER *parser, char *input) {
         rc = PARSER_RC_ERROR;
 
     if(rc == PARSER_RC_ERROR) {
-        CLEAN_BUFFER *wb = buffer_create(PLUGINSD_LINE_MAX, NULL);
+        CLEAN_BUFFER *wb = buffer_create(1024, NULL);
         line_splitter_reconstruct_line(wb, &parser->line);
         netdata_log_error("PLUGINSD: parser_action('%s') failed on line %zu: { %s } (quotes added to show parsing)",
                 command, parser->line.count, buffer_tostring(wb));

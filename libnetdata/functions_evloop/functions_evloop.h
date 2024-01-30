@@ -5,9 +5,12 @@
 
 #include "../libnetdata.h"
 
+#define MAX_FUNCTION_PARAMETERS 1024
+#define PLUGINS_FUNCTIONS_TIMEOUT_DEFAULT 10 // seconds
+
+// plugins.d 1st version of the external plugins and streaming protocol
 #define PLUGINSD_KEYWORD_CHART                  "CHART"
 #define PLUGINSD_KEYWORD_CHART_DEFINITION_END   "CHART_DEFINITION_END"
-
 #define PLUGINSD_KEYWORD_DIMENSION              "DIMENSION"
 #define PLUGINSD_KEYWORD_BEGIN                  "BEGIN"
 #define PLUGINSD_KEYWORD_SET                    "SET"
@@ -19,15 +22,25 @@
 #define PLUGINSD_KEYWORD_OVERWRITE              "OVERWRITE"
 #define PLUGINSD_KEYWORD_CLABEL                 "CLABEL"
 #define PLUGINSD_KEYWORD_CLABEL_COMMIT          "CLABEL_COMMIT"
+#define PLUGINSD_KEYWORD_EXIT                   "EXIT"
 
-#define PLUGINSD_KEYWORD_FUNCTION               "FUNCTION"
-#define PLUGINSD_KEYWORD_FUNCTION_PAYLOAD       "FUNCTION_PAYLOAD"
-#define PLUGINSD_KEYWORD_FUNCTION_PAYLOAD_END   "FUNCTION_PAYLOAD_END"
-#define PLUGINSD_KEYWORD_FUNCTION_CANCEL        "FUNCTION_CANCEL"
-#define PLUGINSD_KEYWORD_FUNCTION_PROGRESS      "FUNCTION_PROGRESS"
-#define PLUGINSD_KEYWORD_FUNCTION_RESULT_BEGIN  "FUNCTION_RESULT_BEGIN"
-#define PLUGINSD_KEYWORD_FUNCTION_RESULT_END    "FUNCTION_RESULT_END"
+// high-speed versions of BEGIN, SET, END
+#define PLUGINSD_KEYWORD_BEGIN_V2               "BEGIN2"
+#define PLUGINSD_KEYWORD_SET_V2                 "SET2"
+#define PLUGINSD_KEYWORD_END_V2                 "END2"
 
+// super high-speed versions of BEGIN, SET, END have this as first parameter
+// enabled with the streaming capability STREAM_CAP_SLOTS
+#define PLUGINSD_KEYWORD_SLOT                   "SLOT" // to change the length of this, update pluginsd_extract_chart_slot() too
+
+// virtual hosts (only for external plugins - for streaming virtual hosts are like all other hosts)
+#define PLUGINSD_KEYWORD_HOST_DEFINE            "HOST_DEFINE"
+#define PLUGINSD_KEYWORD_HOST_DEFINE_END        "HOST_DEFINE_END"
+#define PLUGINSD_KEYWORD_HOST_LABEL             "HOST_LABEL"
+#define PLUGINSD_KEYWORD_HOST                   "HOST"
+
+// replication
+// enabled with STREAM_CAP_REPLICATION
 #define PLUGINSD_KEYWORD_REPLAY_CHART           "REPLAY_CHART"
 #define PLUGINSD_KEYWORD_REPLAY_BEGIN           "RBEGIN"
 #define PLUGINSD_KEYWORD_REPLAY_SET             "RSET"
@@ -35,30 +48,36 @@
 #define PLUGINSD_KEYWORD_REPLAY_RRDSET_STATE    "RSSTATE"
 #define PLUGINSD_KEYWORD_REPLAY_END             "REND"
 
-#define PLUGINSD_KEYWORD_BEGIN_V2               "BEGIN2"
-#define PLUGINSD_KEYWORD_SET_V2                 "SET2"
-#define PLUGINSD_KEYWORD_END_V2                 "END2"
+// plugins.d accepts these for functions (from external plugins or streaming children)
+// related to STREAM_CAP_FUNCTIONS, STREAM_CAP_PROGRESS
+#define PLUGINSD_KEYWORD_FUNCTION               "FUNCTION"                  // define a function
+#define PLUGINSD_KEYWORD_FUNCTION_PROGRESS      "FUNCTION_PROGRESS"         // send updates about function progress
+#define PLUGINSD_KEYWORD_FUNCTION_RESULT_BEGIN  "FUNCTION_RESULT_BEGIN"     // the result of a function transaction
+#define PLUGINSD_KEYWORD_FUNCTION_RESULT_END    "FUNCTION_RESULT_END"       // the end of the result of a func. trans.
 
-#define PLUGINSD_KEYWORD_HOST_DEFINE            "HOST_DEFINE"
-#define PLUGINSD_KEYWORD_HOST_DEFINE_END        "HOST_DEFINE_END"
-#define PLUGINSD_KEYWORD_HOST_LABEL             "HOST_LABEL"
-#define PLUGINSD_KEYWORD_HOST                   "HOST"
+// plugins.d sends these for functions (to external plugins or streaming children)
+// related to STREAM_CAP_FUNCTIONS, STREAM_CAP_PROGRESS
+#define PLUGINSD_CALL_FUNCTION                  "FUNCTION"                  // call a function to a plugin or remote host
+#define PLUGINSD_CALL_FUNCTION_PAYLOAD_BEGIN    "FUNCTION_PAYLOAD"          // call a function with a payload
+#define PLUGINSD_CALL_FUNCTION_PAYLOAD_END      "FUNCTION_PAYLOAD_END"      // function payload ends
+#define PLUGINSD_CALL_FUNCTION_CANCEL           "FUNCTION_CANCEL"           // cancel a running function transaction
+#define PLUGINSD_CALL_FUNCTION_PROGRESS         "FUNCTION_PROGRESS"         // let the function know the user is waiting
 
-#define PLUGINSD_KEYWORD_DYNCFG_ENABLE          "DYNCFG_ENABLE"
-#define PLUGINSD_KEYWORD_DYNCFG_REGISTER_MODULE "DYNCFG_REGISTER_MODULE"
+// dyncfg
+// enabled with STREAM_CAP_DYNCFG
+#define PLUGINSD_KEYWORD_CONFIG                 "CONFIG"
+#define PLUGINSD_KEYWORD_CONFIG_ACTION_CREATE   "create"
+#define PLUGINSD_KEYWORD_CONFIG_ACTION_DELETE   "delete"
+#define PLUGINSD_KEYWORD_CONFIG_ACTION_STATUS   "status"
+#define PLUGINSD_FUNCTION_CONFIG                "config"
 
-#define PLUGINSD_KEYWORD_REPORT_JOB_STATUS      "REPORT_JOB_STATUS"
+typedef void (*functions_evloop_worker_execute_t)(const char *transaction, char *function, usec_t *stop_monotonic_ut,
+                                                  bool *cancelled, BUFFER *payload, HTTP_ACCESS access,
+                                                  const char *source, void *data);
 
-#define PLUGINSD_KEYWORD_EXIT                   "EXIT"
-
-#define PLUGINSD_KEYWORD_SLOT                   "SLOT" // to change the length of this, update pluginsd_extract_chart_slot() too
-
-#define PLUGINS_FUNCTIONS_TIMEOUT_DEFAULT 10 // seconds
-
-typedef void (*functions_evloop_worker_execute_t)(const char *transaction, char *function, usec_t *stop_monotonic_ut, bool *cancelled);
 struct functions_evloop_worker_job;
 struct functions_evloop_globals *functions_evloop_init(size_t worker_threads, const char *tag, netdata_mutex_t *stdout_mutex, bool *plugin_should_exit);
-void functions_evloop_add_function(struct functions_evloop_globals *wg, const char *function, functions_evloop_worker_execute_t cb, time_t default_timeout);
+void functions_evloop_add_function(struct functions_evloop_globals *wg, const char *function, functions_evloop_worker_execute_t cb, time_t default_timeout, void *data);
 void functions_evloop_cancel_threads(struct functions_evloop_globals *wg);
 
 #define FUNCTIONS_EXTENDED_TIME_ON_PROGRESS_UT (10 * USEC_PER_SEC)
@@ -118,5 +137,20 @@ static inline void pluginsd_function_progress_to_stdout(const char *transaction,
             transaction, done, all);
     fflush(stdout);
 }
+
+static inline void send_newline_and_flush(pthread_mutex_t *mutex) {
+    netdata_mutex_lock(mutex);
+    fprintf(stdout, "\n");
+    fflush(stdout);
+    netdata_mutex_unlock(mutex);
+}
+
+void functions_evloop_dyncfg_add(struct functions_evloop_globals *wg, const char *id, const char *path,
+                                 DYNCFG_STATUS status, DYNCFG_TYPE type, DYNCFG_SOURCE_TYPE source_type, const char *source, DYNCFG_CMDS cmds,
+                                 HTTP_ACCESS view_access, HTTP_ACCESS edit_access,
+                                 dyncfg_cb_t cb, void *data);
+
+void functions_evloop_dyncfg_del(struct functions_evloop_globals *wg, const char *id);
+void functions_evloop_dyncfg_status(struct functions_evloop_globals *wg, const char *id, DYNCFG_STATUS status);
 
 #endif //NETDATA_FUNCTIONS_EVLOOP_H

@@ -129,6 +129,9 @@ static void (*libc_free)(void *) = free_first_run;
 static char *strdup_first_run(const char *s);
 static char *(*libc_strdup)(const char *) = strdup_first_run;
 
+static char *strndup_first_run(const char *s, size_t len);
+static char *(*libc_strndup)(const char *, size_t) = strndup_first_run;
+
 static size_t malloc_usable_size_first_run(void *ptr);
 #ifdef HAVE_MALLOC_USABLE_SIZE
 static size_t (*libc_malloc_usable_size)(void *) = malloc_usable_size_first_run;
@@ -169,6 +172,11 @@ static char *strdup_first_run(const char *s) {
     return libc_strdup(s);
 }
 
+static char *strndup_first_run(const char *s, size_t len) {
+    link_system_library_function((libc_function_t *) &libc_strndup, "strndup", true);
+    return libc_strndup(s, len);
+}
+
 static size_t malloc_usable_size_first_run(void *ptr) {
     link_system_library_function((libc_function_t *) &libc_malloc_usable_size, "malloc_usable_size", false);
 
@@ -200,6 +208,10 @@ void free(void *ptr) {
 
 char *strdup(const char *s) {
     return strdupz(s);
+}
+
+char *strndup(const char *s, size_t len) {
+    return strndupz(s, len);
 }
 
 size_t malloc_usable_size(void *ptr) {
@@ -365,6 +377,30 @@ char *strdupz_int(const char *s, const char *file, const char *function, size_t 
     return (char *)&t->data;
 }
 
+char *strndupz_int(const char *s, size_t len, const char *file, const char *function, size_t line) {
+    struct malloc_trace *p = malloc_trace_find_or_create(file, function, line);
+    size_t size = len + 1;
+
+    size_t_atomic_count(add, p->strdup_calls, 1);
+    size_t_atomic_count(add, p->allocations, 1);
+    size_t_atomic_bytes(add, p->bytes, size);
+
+    struct malloc_header *t = (struct malloc_header *)libc_malloc(malloc_header_size + size);
+    if (unlikely(!t)) fatal("strndupz() cannot allocate %zu bytes of memory (%zu with header).", size, malloc_header_size + size);
+    t->signature.magic = 0x0BADCAFE;
+    t->signature.trace = p;
+    t->signature.size = size;
+
+#ifdef NETDATA_INTERNAL_CHECKS
+    for(ssize_t i = 0; i < (ssize_t)sizeof(t->padding) ;i++) // signed to avoid compiler warning when zero-padded
+        t->padding[i] = 0xFF;
+#endif
+
+    memcpy(&t->data, s, size);
+    t->data[len] = '\0';
+    return (char *)&t->data;
+}
+
 static struct malloc_header *malloc_get_header(void *ptr, const char *caller, const char *file, const char *function, size_t line) {
     uint8_t *ret = (uint8_t *)ptr - malloc_header_size;
     struct malloc_header *t = (struct malloc_header *)ret;
@@ -447,6 +483,12 @@ void freez_int(void *ptr, const char *file, const char *function, size_t line) {
 char *strdupz(const char *s) {
     char *t = strdup(s);
     if (unlikely(!t)) fatal("Cannot strdup() string '%s'", s);
+    return t;
+}
+
+char *strndupz(const char *s, size_t len) {
+    char *t = strndup(s, len);
+    if (unlikely(!t)) fatal("Cannot strndup() string '%s' of len %zu", s, len);
     return t;
 }
 
@@ -1218,37 +1260,6 @@ int netdata_munmap(void *ptr, size_t size) {
     return munmap(ptr, size);
 }
 
-int memory_file_save(const char *filename, void *mem, size_t size) {
-    char tmpfilename[FILENAME_MAX + 1];
-
-    snprintfz(tmpfilename, FILENAME_MAX, "%s.%ld.tmp", filename, (long) getpid());
-
-    int fd = open(tmpfilename, O_RDWR | O_CREAT | O_NOATIME, 0664);
-    if (fd < 0) {
-        netdata_log_error("Cannot create/open file '%s'.", filename);
-        return -1;
-    }
-
-    if (write(fd, mem, size) != (ssize_t) size) {
-        netdata_log_error("Cannot write to file '%s' %ld bytes.", filename, (long) size);
-        close(fd);
-        return -1;
-    }
-
-    close(fd);
-
-    if (rename(tmpfilename, filename)) {
-        netdata_log_error("Cannot rename '%s' to '%s'", tmpfilename, filename);
-        return -1;
-    }
-
-    return 0;
-}
-
-int fd_is_valid(int fd) {
-    return fcntl(fd, F_GETFD) != -1 || errno != EBADF;
-}
-
 char *fgets_trim_len(char *buf, size_t buf_size, FILE *fp, size_t *len) {
     char *s = fgets(buf, (int)buf_size, fp);
     if (!s) return NULL;
@@ -1292,92 +1303,59 @@ int snprintfz(char *dst, size_t n, const char *fmt, ...) {
     return ret;
 }
 
-/*
-// poor man cycle counting
-static unsigned long tsc;
-void begin_tsc(void) {
-    unsigned long a, d;
-    asm volatile ("cpuid\nrdtsc" : "=a" (a), "=d" (d) : "0" (0) : "ebx", "ecx");
-    tsc = ((unsigned long)d << 32) | (unsigned long)a;
-}
-unsigned long end_tsc(void) {
-    unsigned long a, d;
-    asm volatile ("rdtscp" : "=a" (a), "=d" (d) : : "ecx");
-    return (((unsigned long)d << 32) | (unsigned long)a) - tsc;
-}
-*/
-
-int recursively_delete_dir(const char *path, const char *reason) {
-    DIR *dir = opendir(path);
-    if(!dir) {
-        netdata_log_error("Cannot read %s directory to be deleted '%s'", reason?reason:"", path);
-        return -1;
-    }
-
-    int ret = 0;
-    struct dirent *de = NULL;
-    while((de = readdir(dir))) {
-        if(de->d_type == DT_DIR
-           && (
-                   (de->d_name[0] == '.' && de->d_name[1] == '\0')
-                   || (de->d_name[0] == '.' && de->d_name[1] == '.' && de->d_name[2] == '\0')
-           ))
-            continue;
-
-        char fullpath[FILENAME_MAX + 1];
-        snprintfz(fullpath, FILENAME_MAX, "%s/%s", path, de->d_name);
-
-        if(de->d_type == DT_DIR) {
-            int r = recursively_delete_dir(fullpath, reason);
-            if(r > 0) ret += r;
-            continue;
-        }
-
-        netdata_log_info("Deleting %s file '%s'", reason?reason:"", fullpath);
-        if(unlikely(unlink(fullpath) == -1))
-            netdata_log_error("Cannot delete %s file '%s'", reason?reason:"", fullpath);
-        else
-            ret++;
-    }
-
-    netdata_log_info("Deleting empty directory '%s'", path);
-    if(unlikely(rmdir(path) == -1))
-        netdata_log_error("Cannot delete empty directory '%s'", path);
-    else
-        ret++;
-
-    closedir(dir);
-
-    return ret;
-}
-
-static int is_virtual_filesystem(const char *path, char **reason) {
-
+static int is_procfs(const char *path, char **reason) {
 #if defined(__APPLE__) || defined(__FreeBSD__)
     (void)path;
     (void)reason;
 #else
     struct statfs stat;
-    // stat.f_fsid.__val[0] is a file system id
-    // stat.f_fsid.__val[1] is the inode
-    // so their combination uniquely identifies the file/dir
 
     if (statfs(path, &stat) == -1) {
-        if(reason) *reason = "failed to statfs()";
+        if (reason)
+            *reason = "failed to statfs()";
         return -1;
     }
 
-    if(stat.f_fsid.__val[0] != 0 || stat.f_fsid.__val[1] != 0) {
-        errno = EINVAL;
-        if(reason) *reason = "is not a virtual file system";
+#if defined PROC_SUPER_MAGIC
+    if (stat.f_type != PROC_SUPER_MAGIC) {
+        if (reason)
+            *reason = "type is not procfs";
         return -1;
     }
+#endif
+
 #endif
 
     return 0;
 }
 
-int verify_netdata_host_prefix() {
+static int is_sysfs(const char *path, char **reason) {
+#if defined(__APPLE__) || defined(__FreeBSD__)
+    (void)path;
+    (void)reason;
+#else
+    struct statfs stat;
+
+    if (statfs(path, &stat) == -1) {
+        if (reason)
+            *reason = "failed to statfs()";
+        return -1;
+    }
+
+#if defined SYSFS_MAGIC
+    if (stat.f_type != SYSFS_MAGIC) {
+        if (reason)
+            *reason = "type is not sysfs";
+        return -1;
+    }
+#endif
+
+#endif
+
+    return 0;
+}
+
+int verify_netdata_host_prefix(bool log_msg) {
     if(!netdata_configured_host_prefix)
         netdata_configured_host_prefix = "";
 
@@ -1403,20 +1381,23 @@ int verify_netdata_host_prefix() {
 
     path = buffer;
     snprintfz(path, FILENAME_MAX, "%s/proc", netdata_configured_host_prefix);
-    if(is_virtual_filesystem(path, &reason) == -1)
+    if(is_procfs(path, &reason) == -1)
         goto failed;
 
     snprintfz(path, FILENAME_MAX, "%s/sys", netdata_configured_host_prefix);
-    if(is_virtual_filesystem(path, &reason) == -1)
+    if(is_sysfs(path, &reason) == -1)
         goto failed;
 
-    if(netdata_configured_host_prefix && *netdata_configured_host_prefix)
-        netdata_log_info("Using host prefix directory '%s'", netdata_configured_host_prefix);
+    if (netdata_configured_host_prefix && *netdata_configured_host_prefix) {
+        if (log_msg)
+            netdata_log_info("Using host prefix directory '%s'", netdata_configured_host_prefix);
+    }
 
     return 0;
 
 failed:
-    netdata_log_error("Ignoring host prefix '%s': path '%s' %s", netdata_configured_host_prefix, path, reason);
+    if (log_msg)
+        netdata_log_error("Ignoring host prefix '%s': path '%s' %s", netdata_configured_host_prefix, path, reason);
     netdata_configured_host_prefix = "";
     return -1;
 }
@@ -1522,11 +1503,14 @@ int path_is_file(const char *path, const char *subpath) {
     return is_file;
 }
 
-void recursive_config_double_dir_load(const char *user_path, const char *stock_path, const char *subpath, int (*callback)(const char *filename, void *data), void *data, size_t depth) {
+void recursive_config_double_dir_load(const char *user_path, const char *stock_path, const char *subpath, int (*callback)(const char *filename, void *data, bool stock_config), void *data, size_t depth) {
     if(depth > 3) {
         netdata_log_error("CONFIG: Max directory depth reached while reading user path '%s', stock path '%s', subpath '%s'", user_path, stock_path, subpath);
         return;
     }
+
+    if(!stock_path)
+        stock_path = user_path;
 
     char *udir = strdupz_path_subpath(user_path, subpath);
     char *sdir = strdupz_path_subpath(stock_path, subpath);
@@ -1561,7 +1545,7 @@ void recursive_config_double_dir_load(const char *user_path, const char *stock_p
                    len > 5 && !strcmp(&de->d_name[len - 5], ".conf")) {
                     char *filename = strdupz_path_subpath(udir, de->d_name);
                     netdata_log_debug(D_HEALTH, "CONFIG calling callback for user file '%s'", filename);
-                    callback(filename, data);
+                    callback(filename, data, false);
                     freez(filename);
                     continue;
                 }
@@ -1609,7 +1593,7 @@ void recursive_config_double_dir_load(const char *user_path, const char *stock_p
                         len > 5 && !strcmp(&de->d_name[len - 5], ".conf")) {
                         char *filename = strdupz_path_subpath(sdir, de->d_name);
                         netdata_log_debug(D_HEALTH, "CONFIG calling callback for stock file '%s'", filename);
-                        callback(filename, data);
+                        callback(filename, data, true);
                         freez(filename);
                         continue;
                     }
@@ -1736,6 +1720,11 @@ bool run_command_and_copy_output_to_stdout(const char *command, int max_line_len
 
     netdata_pclose(NULL, fp, pid);
     return true;
+}
+
+
+static int fd_is_valid(int fd) {
+    return fcntl(fd, F_GETFD) != -1 || errno != EBADF;
 }
 
 void for_each_open_fd(OPEN_FD_ACTION action, OPEN_FD_EXCLUDE excluded_fds){
@@ -2011,7 +2000,7 @@ bool rrdr_relative_window_to_absolute(time_t *after, time_t *before, time_t now)
 }
 
 // Returns 1 if an absolute period was requested or 0 if it was a relative period
-bool rrdr_relative_window_to_absolute_query(time_t *after, time_t *before, time_t *now_ptr, bool unittest_running) {
+bool rrdr_relative_window_to_absolute_query(time_t *after, time_t *before, time_t *now_ptr, bool unittest) {
     time_t now = now_realtime_sec() - 1;
 
     if(now_ptr)
@@ -2025,16 +2014,16 @@ bool rrdr_relative_window_to_absolute_query(time_t *after, time_t *before, time_
     time_t absolute_minimum_time = now - (10 * 365 * 86400);
     time_t absolute_maximum_time = now + (1 * 365 * 86400);
 
-    if (after_requested < absolute_minimum_time && !unittest_running)
+    if (after_requested < absolute_minimum_time && !unittest)
         after_requested = absolute_minimum_time;
 
-    if (after_requested > absolute_maximum_time && !unittest_running)
+    if (after_requested > absolute_maximum_time && !unittest)
         after_requested = absolute_maximum_time;
 
-    if (before_requested < absolute_minimum_time && !unittest_running)
+    if (before_requested < absolute_minimum_time && !unittest)
         before_requested = absolute_minimum_time;
 
-    if (before_requested > absolute_maximum_time && !unittest_running)
+    if (before_requested > absolute_maximum_time && !unittest)
         before_requested = absolute_maximum_time;
 
     *before = before_requested;

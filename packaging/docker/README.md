@@ -12,6 +12,16 @@ import TabItem from '@theme/TabItem';
 
 # Install Netdata with Docker
 
+## Limitations running the Agent in Docker
+
+We do not officially support running our Docker images with the Docker CLI `--user` option or the Docker Compose
+`user:` parameter. Such usage will usually still work, but some features will not be available when run this
+way. Note that the agent will drop privileges appropriately inside the container during startup, meaning that even
+when run without these options almost nothing in the container will actually run with an effective UID of 0.
+
+Our POWER8+ Docker images do not support our FreeIPMI collector. This is a technical limitation in FreeIPMI itself,
+and unfortunately not something we can realistically work around.
+
 ## Create a new Netdata Agent container
 
 You can create a new Agent container using either `docker run` or `docker-compose`. After using any method, you can
@@ -425,6 +435,62 @@ volumes:
 
 You can run the socket proxy in its own Docker Compose file and leave it on a private network that you can add to
 other services that require access.
+
+### Rootless mode
+
+Netdata can be run successfully in a non-root environment, such as [rootless Docker](https://docs.docker.com/engine/security/rootless/).
+
+However, it should be noted that Netdata's data collection capabilities are considerably restricted in rootless Docker
+due to its inherent limitations. While Netdata can function in a rootless environment, it cannot access certain
+resources that require elevated privileges. The following components do not work:
+
+- container network interfaces monitoring (cgroup-network helper)
+- disk I/O and file descriptors of applications and processes (apps.plugin)
+- debugfs.plugin
+- freeipmi.plugin
+- perf.plugin
+- slabinfo.plugin
+- systemd-journal.plugin
+
+This method creates a [volume](https://docs.docker.com/storage/volumes/) for Netdata's configuration files
+_within the container_ at `/etc/netdata`.
+See the [configure section](#configure-agent-containers) for details. If you want to access the configuration files from
+your _host_ machine, see [host-editable configuration](#with-host-editable-configuration).
+
+<Tabs>
+<TabItem value="docker_run" label="docker run">
+
+<h3> Using the <code>docker run</code> command </h3>
+
+Run the following command in your terminal to start a new container.
+
+```bash
+docker run -d --name=netdata \
+  --hostname=$(hostname) \
+  -p 19999:19999 \
+  -v netdataconfig:/etc/netdata \
+  -v netdatalib:/var/lib/netdata \
+  -v netdatacache:/var/cache/netdata \
+  -v /etc/passwd:/host/etc/passwd:ro \
+  -v /etc/group:/host/etc/group:ro \
+  -v /etc/localtime:/etc/localtime:ro \
+  -v /proc:/host/proc:ro \
+  -v /sys:/host/sys:ro \
+  -v /etc/os-release:/host/etc/os-release:ro \
+  -v /run/user/$UID/docker.sock:/var/run/docker.sock:ro \
+  --restart unless-stopped \
+  --security-opt apparmor=unconfined \
+  netdata/netdata
+```
+
+</TabItem>
+
+</Tabs>
+
+> :bookmark_tabs: Note
+>
+> If you plan to Claim the node to Netdata Cloud, you can find the command with the right parameters by clicking the "
+> Add Nodes" button in your Space's "Nodes" view.
 
 ## Docker tags
 

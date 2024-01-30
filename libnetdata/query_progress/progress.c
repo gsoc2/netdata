@@ -173,7 +173,7 @@ static void query_progress_cleanup_to_reuse(QUERY_PROGRESS *qp, uuid_t *transact
         uuid_copy(qp->transaction, *transaction);
 }
 
-static inline void query_progress_update(QUERY_PROGRESS *qp, usec_t started_ut, HTTP_REQUEST_MODE mode, HTTP_ACL acl, const char *query, const char *payload, const char *client) {
+static inline void query_progress_update(QUERY_PROGRESS *qp, usec_t started_ut, HTTP_REQUEST_MODE mode, HTTP_ACL acl, const char *query, BUFFER *payload, const char *client) {
     qp->mode = mode;
     qp->acl = acl;
     qp->started_ut = started_ut ? started_ut : now_realtime_usec();
@@ -186,8 +186,8 @@ static inline void query_progress_update(QUERY_PROGRESS *qp, usec_t started_ut, 
     if(query && *query && !buffer_strlen(qp->query))
         buffer_strcat(qp->query, query);
 
-    if(payload && *payload && !buffer_strlen(qp->payload))
-        buffer_strcat(qp->payload, payload);
+    if(payload && !buffer_strlen(qp->payload))
+        buffer_copy(qp->payload, payload);
 
     if(client && *client && !buffer_strlen(qp->client))
         buffer_strcat(qp->client, client);
@@ -210,7 +210,7 @@ static inline void query_progress_unlink_from_cache_unsafe(QUERY_PROGRESS *qp) {
 // ----------------------------------------------------------------------------
 // Progress API
 
-void query_progress_start_or_update(uuid_t *transaction, usec_t started_ut, HTTP_REQUEST_MODE mode, HTTP_ACL acl, const char *query, const char *payload, const char *client) {
+void query_progress_start_or_update(uuid_t *transaction, usec_t started_ut, HTTP_REQUEST_MODE mode, HTTP_ACL acl, const char *query, BUFFER *payload, const char *client) {
     if(!transaction)
         return;
 
@@ -369,16 +369,20 @@ int web_api_v2_report_progress(uuid_t *transaction, BUFFER *wb) {
         return HTTP_RESP_NOT_FOUND;
     }
 
-    buffer_json_member_add_uint64(wb, "status", 200);
+    buffer_json_member_add_uint64(wb, "status", HTTP_RESP_OK);
 
+    buffer_json_member_add_uint64(wb, "started_ut", qp->started_ut);
     if(qp->finished_ut) {
+        buffer_json_member_add_uint64(wb, "finished_ut", qp->finished_ut);
         buffer_json_member_add_double(wb, "progress", 100.0);
         buffer_json_member_add_uint64(wb, "age_ut", qp->finished_ut - qp->started_ut);
     }
     else {
-        buffer_json_member_add_uint64(wb, "age_ut", now_realtime_usec() - qp->started_ut);
+        usec_t now_ut = now_realtime_usec();
+        buffer_json_member_add_uint64(wb, "now_ut", now_ut);
+        buffer_json_member_add_uint64(wb, "age_ut", now_ut - qp->started_ut);
 
-        if (qp->all)
+        if   (qp->all)
             buffer_json_member_add_double(wb, "progress", (double) qp->done * 100.0 / (double) qp->all);
         else
             buffer_json_member_add_uint64(wb, "working", qp->done);
@@ -440,7 +444,7 @@ int progress_function_result(BUFFER *wb, const char *hostname) {
 
         buffer_json_add_array_item_uuid_compact(wb, &qp->transaction);
         buffer_json_add_array_item_uint64(wb, qp->started_ut);
-        buffer_json_add_array_item_string(wb, http_request_method2string(qp->mode));
+        buffer_json_add_array_item_string(wb, HTTP_REQUEST_MODE_2str(qp->mode));
         buffer_json_add_array_item_string(wb, buffer_tostring(qp->query));
 
         if(!buffer_strlen(qp->client)) {
@@ -636,6 +640,7 @@ int progress_unittest(void) {
         for(size_t i = 0; i < permanent ;i++) {
             qp = query_progress_find_in_hashtable_unsafe(&valid[i]);
             assert(qp);
+            (void)qp;
         }
     }
 

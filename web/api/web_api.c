@@ -2,63 +2,30 @@
 
 #include "web_api.h"
 
-bool netdata_is_protected_by_bearer = false; // this is controlled by cloud, at the point the agent logs in - this should also be saved to /var/lib/netdata
-DICTIONARY *netdata_authorized_bearers = NULL;
-
-static short int web_client_check_acl_and_bearer(struct web_client *w, HTTP_ACL endpoint_acl) {
-    if(endpoint_acl == HTTP_ACL_NONE || (endpoint_acl & HTTP_ACL_NOCHECK)) {
-        // the endpoint is totally public
-        w->access = HTTP_ACCESS_ADMINS;
-        return HTTP_RESP_OK;
-    }
-
-    bool acl_allows = w->acl & endpoint_acl;
-    if(!acl_allows)
-        // the channel we received the request from (w->acl) is not compatible with the endpoint
-        return HTTP_RESP_FORBIDDEN;
-
-    if(!netdata_is_protected_by_bearer && !(endpoint_acl & (HTTP_ACL_BEARER_REQUIRED | HTTP_ACL_BEARER_OPTIONAL))) {
-        // bearer protection is not enabled and is not required by the endpoint
-        w->access = HTTP_ACCESS_ANY;
-        return HTTP_RESP_OK;
-    }
-
-    if(!(endpoint_acl & (HTTP_ACL_BEARER_REQUIRED | HTTP_ACL_BEARER_OPTIONAL | HTTP_ACL_BEARER_IF_PROTECTED))) {
-        // endpoint does not require a bearer
-        w->access = HTTP_ACCESS_ANY;
-        return HTTP_RESP_OK;
-    }
-
-    if((w->acl & (HTTP_ACL_ACLK | HTTP_ACL_WEBRTC))) {
-        // the request is coming from ACLK or WEBRTC (authorized already),
-        w->access = HTTP_ACCESS_MEMBERS;
-        return HTTP_RESP_OK;
-    }
-
-    // we now need a bearer to serve the request,
-    // because:
-    //   1. HTTP_ACL_BEARER_REQUIRED, or
-    //   2. netdata_is_protected_by_bearer == true
-
-    BEARER_STATUS t = api_check_bearer_token(w);
-    if(t == BEARER_STATUS_AVAILABLE_AND_VALIDATED) {
-        // we have a valid bearer on the request
-        w->access = HTTP_ACCESS_MEMBERS;
-        return HTTP_RESP_OK;
-    }
-
-    if(endpoint_acl & HTTP_ACL_BEARER_OPTIONAL) {
-        w->access = HTTP_ACCESS_ANY;
-        return HTTP_RESP_OK;
-    }
-
-    netdata_log_info("BEARER: bearer is required for request: code %d", t);
-
-    return HTTP_RESP_PRECOND_FAIL;
-}
-
 int web_client_api_request_vX(RRDHOST *host, struct web_client *w, char *url_path_endpoint, struct web_api_command *api_commands) {
     buffer_no_cacheable(w->response.data);
+
+    internal_fatal(web_client_flags_check_auth(w) && !(w->access & HTTP_ACCESS_SIGNED_ID),
+                   "signed-in permission should be set, but is missing");
+
+    internal_fatal(!web_client_flags_check_auth(w) && (w->access & HTTP_ACCESS_SIGNED_ID),
+                   "signed-in permission is set, but it shouldn't");
+
+    if(!web_client_flags_check_auth(w)) {
+        w->user_role = (netdata_is_protected_by_bearer) ? HTTP_USER_ROLE_NONE : HTTP_USER_ROLE_ANY;
+        w->access = (netdata_is_protected_by_bearer) ? HTTP_ACCESS_NONE : HTTP_ACCESS_ANONYMOUS_DATA;
+    }
+
+#ifdef NETDATA_GOD_MODE
+    web_client_flag_set(w, WEB_CLIENT_FLAG_AUTH_GOD);
+    w->user_role = HTTP_USER_ROLE_ADMIN;
+    w->access = HTTP_ACCESS_ALL;
+#endif
+
+    if((w->access & HTTP_ACCESS_SIGNED_ID) && !(w->access & HTTP_ACCESS_SAME_SPACE)) {
+        // this should never happen: a signed-in user from a different space
+        return web_client_permission_denied(w);
+    }
 
     if(unlikely(!url_path_endpoint || !*url_path_endpoint)) {
         buffer_flush(w->response.data);
@@ -77,8 +44,8 @@ int web_client_api_request_vX(RRDHOST *host, struct web_client *w, char *url_pat
 
     uint32_t hash = simple_hash(api_command);
 
-    for(int i = 0; api_commands[i].command ; i++) {
-        if(unlikely(hash == api_commands[i].hash && !strcmp(api_command, api_commands[i].command))) {
+    for(int i = 0; api_commands[i].api ; i++) {
+        if(unlikely(hash == api_commands[i].hash && !strcmp(api_command, api_commands[i].api))) {
             if(unlikely(!api_commands[i].allow_subpaths && api_command != url_path_endpoint)) {
                 buffer_flush(w->response.data);
                 buffer_sprintf(w->response.data, "API command '%s' does not support subpaths.", api_command);
@@ -89,19 +56,14 @@ int web_client_api_request_vX(RRDHOST *host, struct web_client *w, char *url_pat
             if (api_command != url_path_endpoint)
                 freez(api_command);
 
-            short int code = web_client_check_acl_and_bearer(w, api_commands[i].acl);
-            if(code != HTTP_RESP_OK) {
-                if(code == HTTP_RESP_FORBIDDEN)
-                    return web_client_permission_denied(w);
+            bool acl_allows = ((w->acl & api_commands[i].acl) == api_commands[i].acl) || (api_commands[i].acl & HTTP_ACL_NOCHECK);
+            if(!acl_allows)
+                return web_client_permission_denied_acl(w);
 
-                if(code == HTTP_RESP_PRECOND_FAIL)
-                    return web_client_bearer_required(w);
-
-                buffer_flush(w->response.data);
-                buffer_sprintf(w->response.data, "Failed with code %d", code);
-                w->response.code = code;
-                return code;
-            }
+            bool permissions_allows =
+                http_access_user_has_enough_access_level_for_endpoint(w->access, api_commands[i].access);
+            if(!permissions_allows)
+                return web_client_permission_denied(w);
 
             char *query_string = (char *)buffer_tostring(w->url_query_string_decoded);
 
@@ -208,7 +170,7 @@ int web_client_api_request_weights(RRDHOST *host, struct web_client *w, char *ur
             time_group_options = value;
 
         else if(!strcmp(name, "options"))
-            options |= web_client_api_request_v1_data_options(value);
+            options |= rrdr_options_parse(value);
 
         else if(!strcmp(name, "method"))
             method = weights_string_to_method(value);

@@ -16,11 +16,7 @@
 #define WORKER_JOB_CLEANUP_ORPHAN_HOSTS             6
 #define WORKER_JOB_CLEANUP_OBSOLETE_CHARTS_ON_HOSTS 7
 #define WORKER_JOB_FREE_HOST                        9
-#define WORKER_JOB_SAVE_HOST_CHARTS                 10
-#define WORKER_JOB_DELETE_HOST_CHARTS               11
 #define WORKER_JOB_FREE_CHART                       12
-#define WORKER_JOB_SAVE_CHART                       13
-#define WORKER_JOB_DELETE_CHART                     14
 #define WORKER_JOB_FREE_DIMENSION                   15
 #define WORKER_JOB_PGC_MAIN_EVICT                   16
 #define WORKER_JOB_PGC_MAIN_FLUSH                   17
@@ -38,27 +34,18 @@ static void svc_rrddim_obsolete_to_archive(RRDDIM *rd) {
     rrddim_flag_set(rd, RRDDIM_FLAG_ARCHIVED);
     rrddim_flag_clear(rd, RRDDIM_FLAG_OBSOLETE);
 
-    const char *cache_filename = rrddim_cache_filename(rd);
-    if(cache_filename) {
-        netdata_log_info("Deleting dimension file '%s'.", cache_filename);
-        if (unlikely(unlink(cache_filename) == -1))
-            netdata_log_error("Cannot delete dimension file '%s'", cache_filename);
-    }
-
     if (rd->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE) {
-        rrddimvar_delete_all(rd);
-
         /* only a collector can mark a chart as obsolete, so we must remove the reference */
 
         size_t tiers_available = 0, tiers_said_no_retention = 0;
         for(size_t tier = 0; tier < storage_tiers ;tier++) {
-            if(rd->tiers[tier].db_collection_handle) {
+            if(rd->tiers[tier].sch) {
                 tiers_available++;
 
-                if(storage_engine_store_finalize(rd->tiers[tier].db_collection_handle))
+                if(storage_engine_store_finalize(rd->tiers[tier].sch))
                     tiers_said_no_retention++;
 
-                rd->tiers[tier].db_collection_handle = NULL;
+                rd->tiers[tier].sch = NULL;
             }
         }
 
@@ -126,23 +113,10 @@ static void svc_rrdset_obsolete_to_free(RRDSET *st) {
 
     worker_is_busy(WORKER_JOB_FREE_CHART);
 
-    rrdcalc_unlink_all_rrdset_alerts(st);
-
-    rrdsetvar_release_and_delete_all(st);
+    rrdcalc_unlink_and_delete_all_rrdset_alerts(st);
 
     // has to be run after all dimensions are archived - or use-after-free will occur
     rrdvar_delete_all(st->rrdvars);
-
-    if(st->rrd_memory_mode != RRD_MEMORY_MODE_DBENGINE) {
-        if(rrdhost_option_check(st->rrdhost, RRDHOST_OPTION_DELETE_OBSOLETE_CHARTS)) {
-            worker_is_busy(WORKER_JOB_DELETE_CHART);
-            rrdset_delete_files(st);
-        }
-        else {
-            worker_is_busy(WORKER_JOB_SAVE_CHART);
-            rrdset_save(st);
-        }
-    }
 
     rrdset_free(st);
 }
@@ -269,28 +243,11 @@ restart_after_removal:
         if(!rrdhost_should_be_removed(host, protected_host, now))
             continue;
 
-        bool is_archived = rrdhost_flag_check(host, RRDHOST_FLAG_ARCHIVED);
-        if (!is_archived) {
-            netdata_log_info("Host '%s' with machine guid '%s' is obsolete - cleaning up.", rrdhost_hostname(host), host->machine_guid);
-
-            if (rrdhost_option_check(host, RRDHOST_OPTION_DELETE_ORPHAN_HOST)
-                /* don't delete multi-host DB host files */
-                && !(host->rrd_memory_mode == RRD_MEMORY_MODE_DBENGINE && is_storage_engine_shared(host->db[0].instance))
-            ) {
-                worker_is_busy(WORKER_JOB_DELETE_HOST_CHARTS);
-                rrdhost_delete_charts(host);
-            }
-            else {
-                worker_is_busy(WORKER_JOB_SAVE_HOST_CHARTS);
-                rrdhost_save_charts(host);
-            }
-        }
-
         bool force = false;
-
         if (rrdhost_option_check(host, RRDHOST_OPTION_EPHEMERAL_HOST) && now - host->last_connected > rrdhost_free_ephemeral_time_s)
             force = true;
 
+        bool is_archived = rrdhost_flag_check(host, RRDHOST_FLAG_ARCHIVED);
         if (!force && is_archived)
             continue;
 
@@ -339,11 +296,7 @@ void *service_main(void *ptr)
     worker_register_job_name(WORKER_JOB_CLEANUP_ORPHAN_HOSTS, "cleanup orphan hosts");
     worker_register_job_name(WORKER_JOB_CLEANUP_OBSOLETE_CHARTS_ON_HOSTS, "cleanup obsolete charts on all hosts");
     worker_register_job_name(WORKER_JOB_FREE_HOST, "free host");
-    worker_register_job_name(WORKER_JOB_SAVE_HOST_CHARTS, "save host charts");
-    worker_register_job_name(WORKER_JOB_DELETE_HOST_CHARTS, "delete host charts");
     worker_register_job_name(WORKER_JOB_FREE_CHART, "free chart");
-    worker_register_job_name(WORKER_JOB_SAVE_CHART, "save chart");
-    worker_register_job_name(WORKER_JOB_DELETE_CHART, "delete chart");
     worker_register_job_name(WORKER_JOB_FREE_DIMENSION, "free dimension");
     worker_register_job_name(WORKER_JOB_PGC_MAIN_EVICT, "main cache evictions");
     worker_register_job_name(WORKER_JOB_PGC_MAIN_FLUSH, "main cache flushes");
@@ -354,12 +307,18 @@ void *service_main(void *ptr)
     heartbeat_t hb;
     heartbeat_init(&hb);
     usec_t step = USEC_PER_SEC * SERVICE_HEARTBEAT;
+    usec_t real_step = USEC_PER_SEC;
 
     netdata_log_debug(D_SYSTEM, "Service thread starts");
 
     while (service_running(SERVICE_MAINTENANCE)) {
         worker_is_idle();
-        heartbeat_next(&hb, step);
+        heartbeat_next(&hb, USEC_PER_SEC);
+        if (real_step < step) {
+            real_step += USEC_PER_SEC;
+            continue;
+        }
+        real_step = USEC_PER_SEC;
 
         svc_rrd_cleanup_obsolete_charts_from_all_hosts();
         svc_rrdhost_cleanup_orphan_hosts(localhost);

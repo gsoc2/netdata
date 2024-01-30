@@ -8,7 +8,7 @@ static struct {
     const char *name;
     uint32_t hash;
     RRDR_OPTIONS value;
-} api_v1_data_options[] = {
+} rrdr_options[] = {
         {  "nonzero"           , 0    , RRDR_OPTION_NONZERO}
         , {"flip"              , 0    , RRDR_OPTION_REVERSED}
         , {"reversed"          , 0    , RRDR_OPTION_REVERSED}
@@ -108,13 +108,15 @@ static struct {
     uint32_t hash;
     DATASOURCE_FORMAT value;
 } api_v1_data_google_formats[] = {
-        // this is not error - when google requests json, it expects javascript
-        // https://developers.google.com/chart/interactive/docs/dev/implementing_data_source#responseformat
-        {  "json"     , 0    , DATASOURCE_DATATABLE_JSONP}
-        , {"html"     , 0    , DATASOURCE_HTML}
-        , {"csv"      , 0    , DATASOURCE_CSV}
-        , {"tsv-excel", 0    , DATASOURCE_TSV}
-        , {           NULL, 0, 0}
+    // this is not an error - when Google requests json, it expects javascript
+    // https://developers.google.com/chart/interactive/docs/dev/implementing_data_source#responseformat
+      {"json",      0, DATASOURCE_DATATABLE_JSONP}
+    , {"html",      0, DATASOURCE_HTML}
+    , {"csv",       0, DATASOURCE_CSV}
+    , {"tsv-excel", 0, DATASOURCE_TSV}
+
+    // terminator
+    , {NULL,        0, 0}
 };
 
 void web_client_api_v1_init(void) {
@@ -123,8 +125,8 @@ void web_client_api_v1_init(void) {
     for(i = 0; contexts_v2_alert_status[i].name ; i++)
         contexts_v2_alert_status[i].hash = simple_hash(contexts_v2_alert_status[i].name);
 
-    for(i = 0; api_v1_data_options[i].name ; i++)
-        api_v1_data_options[i].hash = simple_hash(api_v1_data_options[i].name);
+    for(i = 0; rrdr_options[i].name ; i++)
+        rrdr_options[i].hash = simple_hash(rrdr_options[i].name);
 
     for(i = 0; contexts_v2_options[i].name ; i++)
         contexts_v2_options[i].hash = simple_hash(contexts_v2_options[i].name);
@@ -209,21 +211,30 @@ void web_client_api_v1_management_init(void) {
 	api_secret = get_mgmt_api_key();
 }
 
-inline RRDR_OPTIONS web_client_api_request_v1_data_options(char *o) {
+inline RRDR_OPTIONS rrdr_options_parse_one(const char *o) {
+    RRDR_OPTIONS ret = 0;
+
+    if(!o || !*o) return ret;
+
+    uint32_t hash = simple_hash(o);
+    int i;
+    for(i = 0; rrdr_options[i].name ; i++) {
+        if (unlikely(hash == rrdr_options[i].hash && !strcmp(o, rrdr_options[i].name))) {
+            ret |= rrdr_options[i].value;
+            break;
+        }
+    }
+
+    return ret;
+}
+
+inline RRDR_OPTIONS rrdr_options_parse(char *o) {
     RRDR_OPTIONS ret = 0;
     char *tok;
 
     while(o && *o && (tok = strsep_skip_consecutive_separators(&o, ", |"))) {
         if(!*tok) continue;
-
-        uint32_t hash = simple_hash(tok);
-        int i;
-        for(i = 0; api_v1_data_options[i].name ; i++) {
-            if (unlikely(hash == api_v1_data_options[i].hash && !strcmp(tok, api_v1_data_options[i].name))) {
-                ret |= api_v1_data_options[i].value;
-                break;
-            }
-        }
+        ret |= rrdr_options_parse_one(tok);
     }
 
     return ret;
@@ -301,14 +312,14 @@ void web_client_api_request_v2_contexts_options_to_buffer_json_array(BUFFER *wb,
     buffer_json_array_close(wb);
 }
 
-void web_client_api_request_v1_data_options_to_buffer_json_array(BUFFER *wb, const char *key, RRDR_OPTIONS options) {
+void rrdr_options_to_buffer_json_array(BUFFER *wb, const char *key, RRDR_OPTIONS options) {
     buffer_json_member_add_array(wb, key);
 
     RRDR_OPTIONS used = 0; // to prevent adding duplicates
-    for(int i = 0; api_v1_data_options[i].name ; i++) {
-        if (unlikely((api_v1_data_options[i].value & options) && !(api_v1_data_options[i].value & used))) {
-            const char *name = api_v1_data_options[i].name;
-            used |= api_v1_data_options[i].value;
+    for(int i = 0; rrdr_options[i].name ; i++) {
+        if (unlikely((rrdr_options[i].value & options) && !(rrdr_options[i].value & used))) {
+            const char *name = rrdr_options[i].name;
+            used |= rrdr_options[i].value;
 
             buffer_json_add_array_item_string(wb, name);
         }
@@ -323,10 +334,10 @@ void web_client_api_request_v1_data_options_to_string(char *buf, size_t size, RR
 
     RRDR_OPTIONS used = 0; // to prevent adding duplicates
     int added = 0;
-    for(int i = 0; api_v1_data_options[i].name ; i++) {
-        if (unlikely((api_v1_data_options[i].value & options) && !(api_v1_data_options[i].value & used))) {
-            const char *name = api_v1_data_options[i].name;
-            used |= api_v1_data_options[i].value;
+    for(int i = 0; rrdr_options[i].name ; i++) {
+        if (unlikely((rrdr_options[i].value & options) && !(rrdr_options[i].value & used))) {
+            const char *name = rrdr_options[i].name;
+            used |= rrdr_options[i].value;
 
             if(added && write < end)
                 *write++ = ',';
@@ -509,6 +520,52 @@ inline int web_client_api_request_single_chart(RRDHOST *host, struct web_client 
     return HTTP_RESP_OK;
 
     cleanup:
+    return ret;
+}
+
+static inline int web_client_api_request_variable(RRDHOST *host, struct web_client *w, char *url) {
+    int ret = HTTP_RESP_BAD_REQUEST;
+    char *chart = NULL;
+    char *variable = NULL;
+
+    buffer_flush(w->response.data);
+
+    while(url) {
+        char *value = strsep_skip_consecutive_separators(&url, "&");
+        if(!value || !*value) continue;
+
+        char *name = strsep_skip_consecutive_separators(&value, "=");
+        if(!name || !*name) continue;
+        if(!value || !*value) continue;
+
+        // name and value are now the parameters
+        // they are not null and not empty
+
+        if(!strcmp(name, "chart")) chart = value;
+        else if(!strcmp(name, "variable")) variable = value;
+    }
+
+    if(!chart || !*chart || !variable || !*variable) {
+        buffer_sprintf(w->response.data, "A chart= and a variable= are required.");
+        goto cleanup;
+    }
+
+    RRDSET *st = rrdset_find(host, chart);
+    if(!st) st = rrdset_find_byname(host, chart);
+    if(!st) {
+        buffer_strcat(w->response.data, "Chart is not found: ");
+        buffer_strcat_htmlescape(w->response.data, chart);
+        ret = HTTP_RESP_NOT_FOUND;
+        goto cleanup;
+    }
+
+    w->response.data->content_type = CT_APPLICATION_JSON;
+    st->last_accessed_time_s = now_realtime_sec();
+    alert_variable_lookup_trace(host, st, variable, w->response.data);
+
+    return HTTP_RESP_OK;
+
+cleanup:
     return ret;
 }
 
@@ -721,7 +778,7 @@ static inline int web_client_api_request_v1_data(RRDHOST *host, struct web_clien
             format = web_client_api_request_v1_data_format(value);
         }
         else if(!strcmp(name, "options")) {
-            options |= web_client_api_request_v1_data_options(value);
+            options |= rrdr_options_parse(value);
         }
         else if(!strcmp(name, "callback")) {
             responseHandler = value;
@@ -857,7 +914,7 @@ static inline int web_client_api_request_v1_data(RRDHOST *host, struct web_clien
             responseHandler,
             google_version,
             google_reqId,
-            (int64_t)st->last_updated.tv_sec);
+            (int64_t)(st ? st->last_updated.tv_sec : 0));
     }
     else if(format == DATASOURCE_JSONP) {
         if(responseHandler == NULL)
@@ -942,7 +999,7 @@ inline int web_client_api_request_v1_registry(RRDHOST *host, struct web_client *
     char *cookie = strstr(w->response.data->buffer, NETDATA_REGISTRY_COOKIE_NAME "=");
     if(cookie)
         strncpyz(person_guid, &cookie[sizeof(NETDATA_REGISTRY_COOKIE_NAME)], UUID_STR_LEN - 1);
-    else if(extract_bearer_token_from_request(w, person_guid, sizeof(person_guid)) != BEARER_STATUS_EXTRACTED_FROM_HEADER)
+    else if(!extract_bearer_token_from_request(w, person_guid, sizeof(person_guid)))
         person_guid[0] = '\0';
 
     char action = '\0';
@@ -1020,12 +1077,12 @@ inline int web_client_api_request_v1_registry(RRDHOST *host, struct web_client *
         // HELLO request, dashboard ACL
         analytics_log_dashboard();
         if(unlikely(!http_can_access_dashboard(w)))
-            return web_client_permission_denied(w);
+            return web_client_permission_denied_acl(w);
     }
     else {
         // everything else, registry ACL
         if(unlikely(!http_can_access_registry(w)))
-            return web_client_permission_denied(w);
+            return web_client_permission_denied_acl(w);
 
         if(unlikely(do_not_track)) {
             buffer_flush(w->response.data);
@@ -1326,21 +1383,6 @@ int web_client_api_request_v1_ml_info(RRDHOST *host, struct web_client *w, char 
 
     return HTTP_RESP_OK;
 }
-
-int web_client_api_request_v1_ml_models(RRDHOST *host, struct web_client *w, char *url) {
-    (void) url;
-
-    if (!netdata_ready)
-        return HTTP_RESP_SERVICE_UNAVAILABLE;
-
-    BUFFER *wb = w->response.data;
-    buffer_flush(wb);
-    wb->content_type = CT_APPLICATION_JSON;
-    ml_host_get_models(host, wb);
-    buffer_no_cacheable(wb);
-
-    return HTTP_RESP_OK;
-}
 #endif // ENABLE_ML
 
 inline int web_client_api_request_v1_info(RRDHOST *host, struct web_client *w, char *url) {
@@ -1418,10 +1460,14 @@ int web_client_api_request_v1_function(RRDHOST *host, struct web_client *w, char
     char transaction[UUID_COMPACT_STR_LEN];
     uuid_unparse_lower_compact(w->transaction, transaction);
 
+    CLEAN_BUFFER *source = buffer_create(100, NULL);
+    web_client_source2buffer(w, source);
+
     return rrd_function_run(host, wb, timeout, w->access, function, true, transaction,
                             NULL, NULL,
                             web_client_progress_functions_update, w,
-                            web_client_interrupt_callback, w, NULL);
+                            web_client_interrupt_callback, w, NULL,
+                            buffer_tostring(source));
 }
 
 int web_client_api_request_v1_functions(RRDHOST *host, struct web_client *w, char *url __maybe_unused) {
@@ -1438,6 +1484,113 @@ int web_client_api_request_v1_functions(RRDHOST *host, struct web_client *w, cha
     buffer_json_finalize(wb);
 
     return HTTP_RESP_OK;
+}
+
+void web_client_source2buffer(struct web_client *w, BUFFER *source) {
+    if(web_client_flag_check(w, WEB_CLIENT_FLAG_AUTH_CLOUD))
+        buffer_sprintf(source, "method=NC");
+    else if(web_client_flag_check(w, WEB_CLIENT_FLAG_AUTH_BEARER))
+        buffer_sprintf(source, "method=api-bearer");
+    else
+        buffer_sprintf(source, "method=api");
+
+    if(web_client_flag_check(w, WEB_CLIENT_FLAG_AUTH_GOD))
+        buffer_strcat(source, ",role=god");
+    else
+        buffer_sprintf(source, ",role=%s", http_id2user_role(w->user_role));
+
+    buffer_sprintf(source, ",permissions="HTTP_ACCESS_FORMAT, (HTTP_ACCESS_FORMAT_CAST)w->access);
+
+    if(w->auth.client_name[0])
+        buffer_sprintf(source, ",user=%s", w->auth.client_name);
+
+    if(!uuid_is_null(w->auth.cloud_account_id)) {
+        char uuid_str[UUID_COMPACT_STR_LEN];
+        uuid_unparse_lower_compact(w->auth.cloud_account_id, uuid_str);
+        buffer_sprintf(source, ",account=%s", uuid_str);
+    }
+
+    if(w->client_ip[0])
+        buffer_sprintf(source, ",ip=%s", w->client_ip);
+
+    if(w->forwarded_for)
+        buffer_sprintf(source, ",forwarded_for=%s", w->forwarded_for);
+}
+
+static int web_client_api_request_v1_config(RRDHOST *host, struct web_client *w, char *url __maybe_unused) {
+    char *action = "tree";
+    char *path = "/";
+    char *id = NULL;
+    char *add_name = NULL;
+    int timeout = 120;
+
+    while(url) {
+        char *value = strsep_skip_consecutive_separators(&url, "&");
+        if(!value || !*value) continue;
+
+        char *name = strsep_skip_consecutive_separators(&value, "=");
+        if(!name || !*name) continue;
+        if(!value || !*value) continue;
+
+        // name and value are now the parameters
+        // they are not null and not empty
+
+        if(!strcmp(name, "action"))
+            action = value;
+        else if(!strcmp(name, "path"))
+            path = value;
+        else if(!strcmp(name, "id"))
+            id = value;
+        else if(!strcmp(name, "name"))
+            add_name = value;
+        else if(!strcmp(name, "timeout")) {
+            timeout = (int)strtol(value, NULL, 10);
+            if(timeout < 10)
+                timeout = 10;
+        }
+    }
+
+    char transaction[UUID_COMPACT_STR_LEN];
+    uuid_unparse_lower_compact(w->transaction, transaction);
+
+    size_t len = strlen(action) + (id ? strlen(id) : 0) + strlen(path) + (add_name ? strlen(add_name) : 0) + 100;
+
+    char cmd[len];
+    if(strcmp(action, "tree") == 0)
+        snprintfz(cmd, sizeof(cmd), PLUGINSD_FUNCTION_CONFIG " tree '%s' '%s'", path, id?id:"");
+    else {
+        DYNCFG_CMDS c = dyncfg_cmds2id(action);
+        if(!id || !*id || !dyncfg_is_valid_id(id)) {
+            rrd_call_function_error(w->response.data, "invalid id given", HTTP_RESP_BAD_REQUEST);
+            return HTTP_RESP_BAD_REQUEST;
+        }
+        if(c == DYNCFG_CMD_NONE) {
+            rrd_call_function_error(w->response.data, "invalid action given", HTTP_RESP_BAD_REQUEST);
+            return HTTP_RESP_BAD_REQUEST;
+        }
+        else if(c == DYNCFG_CMD_ADD) {
+            if(!add_name || !*add_name || !dyncfg_is_valid_id(add_name)) {
+                rrd_call_function_error(w->response.data, "invalid name given", HTTP_RESP_BAD_REQUEST);
+                return HTTP_RESP_BAD_REQUEST;
+            }
+            snprintfz(cmd, sizeof(cmd), PLUGINSD_FUNCTION_CONFIG " %s %s %s", id, dyncfg_id2cmd_one(c), add_name);
+        }
+        else
+            snprintfz(cmd, sizeof(cmd), PLUGINSD_FUNCTION_CONFIG " %s %s", id, dyncfg_id2cmd_one(c));
+    }
+
+    CLEAN_BUFFER *source = buffer_create(100, NULL);
+    web_client_source2buffer(w, source);
+
+    buffer_flush(w->response.data);
+    int code = rrd_function_run(host, w->response.data, timeout, w->access, cmd,
+                                true, transaction,
+                                NULL, NULL,
+                                web_client_progress_functions_update, w,
+                                web_client_interrupt_callback, w,
+                                w->payload, buffer_tostring(source));
+
+    return code;
 }
 
 #ifndef ENABLE_DBENGINE
@@ -1546,50 +1699,238 @@ int web_client_api_request_v1_mgmt(RRDHOST *host, struct web_client *w, char *ur
     }
     needle += strlen(HLT_MGM);
     if (*needle != '\0') {
-        buffer_strcat(w->response.data, "Invalid management request. Curently only 'health' is supported.");
+        buffer_strcat(w->response.data, "Invalid management request. Currently only 'health' is supported.");
         return HTTP_RESP_NOT_FOUND;
     }
     return web_client_api_request_v1_mgmt_health(host, w, url);
 }
 
 static struct web_api_command api_commands_v1[] = {
-        {"info", 0, HTTP_ACL_DASHBOARD_ACLK_WEBRTC, web_client_api_request_v1_info, 0                     },
-        {"data", 0, HTTP_ACL_DASHBOARD_ACLK_WEBRTC, web_client_api_request_v1_data, 0                     },
-        {"chart", 0, HTTP_ACL_DASHBOARD_ACLK_WEBRTC, web_client_api_request_v1_chart, 0                     },
-        {"charts", 0, HTTP_ACL_DASHBOARD_ACLK_WEBRTC, web_client_api_request_v1_charts, 0                     },
-        {"context", 0, HTTP_ACL_DASHBOARD_ACLK_WEBRTC, web_client_api_request_v1_context, 0                     },
-        {"contexts", 0, HTTP_ACL_DASHBOARD_ACLK_WEBRTC, web_client_api_request_v1_contexts, 0                     },
+    // time-series data APIs
+    {
+        .api = "data",
+        .hash = 0,
+        .acl = HTTP_ACL_DASHBOARD,
+        .access = HTTP_ACCESS_ANONYMOUS_DATA,
+        .callback = web_client_api_request_v1_data,
+        .allow_subpaths = 0
+    },
+    {
+        .api = "weights",
+        .hash = 0,
+        .acl = HTTP_ACL_DASHBOARD,
+        .access = HTTP_ACCESS_ANONYMOUS_DATA,
+        .callback = web_client_api_request_v1_weights,
+        .allow_subpaths = 0
+    },
+    {
+        // deprecated - do not use anymore - use "weights"
+        .api = "metric_correlations",
+        .hash = 0,
+        .acl = HTTP_ACL_DASHBOARD,
+        .access = HTTP_ACCESS_ANONYMOUS_DATA,
+        .callback = web_client_api_request_v1_metric_correlations,
+        .allow_subpaths = 0
+    },
+    {
+        // exporting API
+        .api = "allmetrics",
+        .hash = 0,
+        .acl = HTTP_ACL_DASHBOARD,
+        .access = HTTP_ACCESS_ANONYMOUS_DATA,
+        .callback = web_client_api_request_v1_allmetrics,
+        .allow_subpaths = 0
+    },
+    {
+        // badges can be fetched with both dashboard and badge ACL
+        .api = "badge.svg",
+        .hash = 0,
+        .acl = HTTP_ACL_BADGES,
+        .access = HTTP_ACCESS_ANONYMOUS_DATA,
+        .callback = web_client_api_request_v1_badge,
+        .allow_subpaths = 0
+    },
 
+    // alerts APIs
+    {
+        .api = "alarms",
+        .hash = 0,
+        .acl = HTTP_ACL_DASHBOARD,
+        .access = HTTP_ACCESS_ANONYMOUS_DATA,
+        .callback = web_client_api_request_v1_alarms,
+        .allow_subpaths = 0
+    },
+    {
+        .api = "alarms_values",
+        .hash = 0,
+        .acl = HTTP_ACL_DASHBOARD,
+        .access = HTTP_ACCESS_ANONYMOUS_DATA,
+        .callback = web_client_api_request_v1_alarms_values,
+        .allow_subpaths = 0
+    },
+    {
+        .api = "alarm_log",
+        .hash = 0,
+        .acl = HTTP_ACL_DASHBOARD,
+        .access = HTTP_ACCESS_ANONYMOUS_DATA,
+        .callback = web_client_api_request_v1_alarm_log,
+        .allow_subpaths = 0
+    },
+    {
+        .api = "alarm_variables",
+        .hash = 0,
+        .acl = HTTP_ACL_DASHBOARD,
+        .access = HTTP_ACCESS_ANONYMOUS_DATA,
+        .callback = web_client_api_request_v1_alarm_variables,
+        .allow_subpaths = 0
+    },
+    {
+        .api = "variable",
+        .hash = 0,
+        .acl = HTTP_ACL_DASHBOARD,
+        .access = HTTP_ACCESS_ANONYMOUS_DATA,
+        .callback = web_client_api_request_variable,
+        .allow_subpaths = 0
+    },
+    {
+        .api = "alarm_count",
+        .hash = 0,
+        .acl = HTTP_ACL_DASHBOARD,
+        .access = HTTP_ACCESS_ANONYMOUS_DATA,
+        .callback = web_client_api_request_v1_alarm_count,
+        .allow_subpaths = 0
+    },
+
+    // functions APIs - they check permissions per function call
+    {
+        .api = "function",
+        .hash = 0,
+        .acl = HTTP_ACL_DASHBOARD,
+        .access = HTTP_ACCESS_ANONYMOUS_DATA,
+        .callback = web_client_api_request_v1_function,
+        .allow_subpaths = 0
+    },
+    {
+        .api = "functions",
+        .hash = 0,
+        .acl = HTTP_ACL_DASHBOARD,
+        .access = HTTP_ACCESS_ANONYMOUS_DATA,
+        .callback = web_client_api_request_v1_functions,
+        .allow_subpaths = 0
+    },
+
+    // time-series metadata APIs
+    {
+        .api = "chart",
+        .hash = 0,
+        .acl = HTTP_ACL_DASHBOARD,
+        .access = HTTP_ACCESS_ANONYMOUS_DATA,
+        .callback = web_client_api_request_v1_chart,
+        .allow_subpaths = 0
+    },
+    {
+        .api = "charts",
+        .hash = 0,
+        .acl = HTTP_ACL_DASHBOARD,
+        .access = HTTP_ACCESS_ANONYMOUS_DATA,
+        .callback = web_client_api_request_v1_charts,
+        .allow_subpaths = 0
+    },
+    {
+        .api = "context",
+        .hash = 0,
+        .acl = HTTP_ACL_DASHBOARD,
+        .access = HTTP_ACCESS_ANONYMOUS_DATA,
+        .callback = web_client_api_request_v1_context,
+        .allow_subpaths = 0
+    },
+    {
+        .api = "contexts",
+        .hash = 0,
+        .acl = HTTP_ACL_DASHBOARD,
+        .access = HTTP_ACCESS_ANONYMOUS_DATA,
+        .callback = web_client_api_request_v1_contexts,
+        .allow_subpaths = 0
+    },
+
+    // registry APIs
+    {
         // registry checks the ACL by itself, so we allow everything
-        {"registry", 0, HTTP_ACL_NOCHECK, web_client_api_request_v1_registry, 0                     },
+        .api = "registry",
+        .hash = 0,
+        .acl = HTTP_ACL_NONE, // it manages acl by itself
+        .access = HTTP_ACCESS_NONE, // it manages access by itself
+        .callback = web_client_api_request_v1_registry,
+        .allow_subpaths = 0
+    },
 
-        // badges can be fetched with both dashboard and badge permissions
-        {"badge.svg", 0, HTTP_ACL_DASHBOARD_ACLK_WEBRTC | HTTP_ACL_BADGE, web_client_api_request_v1_badge, 0 },
+    // agent information APIs
+    {
+        .api = "info",
+        .hash = 0,
+        .acl = HTTP_ACL_DASHBOARD,
+        .access = HTTP_ACCESS_ANONYMOUS_DATA,
+        .callback = web_client_api_request_v1_info,
+        .allow_subpaths = 0
+    },
+    {
+        .api = "aclk",
+        .hash = 0,
+        .acl = HTTP_ACL_DASHBOARD,
+        .access = HTTP_ACCESS_ANONYMOUS_DATA,
+        .callback = web_client_api_request_v1_aclk_state,
+        .allow_subpaths = 0
+    },
+    {
+        // deprecated - use /api/v2/info
+        .api = "dbengine_stats",
+        .hash = 0,
+        .acl = HTTP_ACL_DASHBOARD,
+        .access = HTTP_ACCESS_ANONYMOUS_DATA,
+        .callback = web_client_api_request_v1_dbengine_stats,
+        .allow_subpaths = 0
+    },
 
-        {"alarms", 0, HTTP_ACL_DASHBOARD_ACLK_WEBRTC, web_client_api_request_v1_alarms, 0              },
-        {"alarms_values", 0, HTTP_ACL_DASHBOARD_ACLK_WEBRTC, web_client_api_request_v1_alarms_values, 0              },
-        {"alarm_log", 0, HTTP_ACL_DASHBOARD_ACLK_WEBRTC, web_client_api_request_v1_alarm_log, 0              },
-        {"alarm_variables", 0, HTTP_ACL_DASHBOARD_ACLK_WEBRTC, web_client_api_request_v1_alarm_variables, 0              },
-        {"alarm_count", 0, HTTP_ACL_DASHBOARD_ACLK_WEBRTC, web_client_api_request_v1_alarm_count, 0              },
-        {"allmetrics", 0, HTTP_ACL_DASHBOARD_ACLK_WEBRTC, web_client_api_request_v1_allmetrics, 0              },
+    // dyncfg APIs
+    {
+        .api = "config",
+        .hash = 0,
+        .acl = HTTP_ACL_DASHBOARD,
+        .access = HTTP_ACCESS_ANONYMOUS_DATA,
+        .callback = web_client_api_request_v1_config,
+        .allow_subpaths = 0
+    },
 
 #if defined(ENABLE_ML)
-        {"ml_info", 0, HTTP_ACL_DASHBOARD_ACLK_WEBRTC, web_client_api_request_v1_ml_info, 0                      },
-        // { "ml_models",       0, HTTP_ACL_DASHBOARD, web_client_api_request_v1_ml_models          },
+    {
+        .api = "ml_info",
+        .hash = 0,
+        .acl = HTTP_ACL_DASHBOARD,
+        .access = HTTP_ACCESS_ANONYMOUS_DATA,
+        .callback = web_client_api_request_v1_ml_info,
+        .allow_subpaths = 0
+    },
 #endif
 
-        {"manage", 0, HTTP_ACL_MGMT | HTTP_ACL_ACLK, web_client_api_request_v1_mgmt, 1 },
-        {"aclk", 0, HTTP_ACL_DASHBOARD_ACLK_WEBRTC, web_client_api_request_v1_aclk_state, 0            },
-        {"metric_correlations", 0, HTTP_ACL_DASHBOARD_ACLK_WEBRTC, web_client_api_request_v1_metric_correlations, 0   },
-        {"weights", 0, HTTP_ACL_DASHBOARD_ACLK_WEBRTC, web_client_api_request_v1_weights, 0               },
+    {
+        // deprecated
+        .api = "manage",
+        .hash = 0,
+        .acl = HTTP_ACL_MANAGEMENT,
+        .access = HTTP_ACCESS_NONE, // it manages access by itself
+        .callback = web_client_api_request_v1_mgmt,
+        .allow_subpaths = 1
+    },
 
-        {"function", 0, HTTP_ACL_ACLK_WEBRTC_DASHBOARD_WITH_OPTIONAL_BEARER | ACL_DEV_OPEN_ACCESS, web_client_api_request_v1_function, 0 },
-        {"functions", 0, HTTP_ACL_DASHBOARD_ACLK_WEBRTC | ACL_DEV_OPEN_ACCESS, web_client_api_request_v1_functions, 0 },
-
-        {"dbengine_stats", 0, HTTP_ACL_DASHBOARD_ACLK_WEBRTC, web_client_api_request_v1_dbengine_stats, 0 },
-
-        // terminator
-        {NULL, 0, HTTP_ACL_NONE, NULL, 0 },
+    {
+        // terminator - keep this last on this list
+        .api = NULL,
+        .hash = 0,
+        .acl = HTTP_ACL_NONE,
+        .access = HTTP_ACCESS_NONE,
+        .callback = NULL,
+        .allow_subpaths = 0
+    },
 };
 
 inline int web_client_api_request_v1(RRDHOST *host, struct web_client *w, char *url_path_endpoint) {
@@ -1598,8 +1939,8 @@ inline int web_client_api_request_v1(RRDHOST *host, struct web_client *w, char *
     if(unlikely(initialized == 0)) {
         initialized = 1;
 
-        for(int i = 0; api_commands_v1[i].command ; i++)
-            api_commands_v1[i].hash = simple_hash(api_commands_v1[i].command);
+        for(int i = 0; api_commands_v1[i].api ; i++)
+            api_commands_v1[i].hash = simple_hash(api_commands_v1[i].api);
     }
 
     return web_client_api_request_vX(host, w, url_path_endpoint, api_commands_v1);

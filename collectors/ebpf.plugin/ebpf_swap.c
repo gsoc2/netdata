@@ -77,7 +77,6 @@ static void ebpf_swap_disable_trampoline(struct swap_bpf *obj)
 {
     bpf_program__set_autoload(obj->progs.netdata_swap_readpage_fentry, false);
     bpf_program__set_autoload(obj->progs.netdata_swap_writepage_fentry, false);
-    bpf_program__set_autoload(obj->progs.netdata_release_task_fentry, false);
 }
 
 /**
@@ -94,9 +93,6 @@ static void ebpf_swap_set_trampoline_target(struct swap_bpf *obj)
 
     bpf_program__set_attach_target(obj->progs.netdata_swap_writepage_fentry, 0,
                                    swap_targets[NETDATA_KEY_SWAP_WRITEPAGE_CALL].name);
-
-    bpf_program__set_attach_target(obj->progs.netdata_release_task_fentry, 0,
-                                   EBPF_COMMON_FNCT_CLEAN_UP);
 }
 
 /**
@@ -160,18 +156,6 @@ static void ebpf_swap_adjust_map(struct swap_bpf *obj, ebpf_module_t *em)
 }
 
 /**
- *  Disable Release Task
- *
- *  Disable release task when apps is not enabled.
- *
- *  @param obj is the main structure for bpf objects.
- */
-static void ebpf_swap_disable_release_task(struct swap_bpf *obj)
-{
-    bpf_program__set_autoload(obj->progs.netdata_release_task_fentry, false);
-}
-
-/**
  * Load and attach
  *
  * Load and attach the eBPF code in kernel.
@@ -195,9 +179,6 @@ static inline int ebpf_swap_load_and_attach(struct swap_bpf *obj, ebpf_module_t 
     }
 
     ebpf_swap_adjust_map(obj, em);
-
-    if (!em->apps_charts && !em->cgroup_charts)
-        ebpf_swap_disable_release_task(obj);
 
     int ret = swap_bpf__load(obj);
     if (ret) {
@@ -874,7 +855,7 @@ void ebpf_swap_create_apps_charts(struct ebpf_module *em, void *ptr)
                              20070,
                              update_every,
                              NETDATA_EBPF_MODULE_NAME_SWAP);
-        ebpf_create_chart_labels("app_group", w->name, 0);
+        ebpf_create_chart_labels("app_group", w->name, 1);
         ebpf_commit_label();
         fprintf(stdout, "DIMENSION calls '' %s 1 1\n", ebpf_algorithms[NETDATA_EBPF_INCREMENTAL_IDX]);
 
@@ -889,7 +870,7 @@ void ebpf_swap_create_apps_charts(struct ebpf_module *em, void *ptr)
                              20071,
                              update_every,
                              NETDATA_EBPF_MODULE_NAME_SWAP);
-        ebpf_create_chart_labels("app_group", w->name, 0);
+        ebpf_create_chart_labels("app_group", w->name, 1);
         ebpf_commit_label();
         fprintf(stdout, "DIMENSION calls '' %s 1 1\n", ebpf_algorithms[NETDATA_EBPF_INCREMENTAL_IDX]);
 

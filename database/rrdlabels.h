@@ -20,7 +20,7 @@ typedef enum __attribute__ ((__packed__)) rrdlabel_source {
 
 #define RRDLABEL_FLAG_INTERNAL (RRDLABEL_FLAG_OLD | RRDLABEL_FLAG_NEW | RRDLABEL_FLAG_DONT_DELETE)
 
-size_t text_sanitize(unsigned char *dst, const unsigned char *src, size_t dst_size, unsigned char *char_map, bool utf, const char *empty, size_t *multibyte_length);
+size_t text_sanitize(unsigned char *dst, const unsigned char *src, size_t dst_size, const unsigned char *char_map, bool utf, const char *empty, size_t *multibyte_length);
 
 RRDLABELS *rrdlabels_create(void);
 void rrdlabels_destroy(RRDLABELS *labels_dict);
@@ -50,6 +50,7 @@ void rrdlabels_to_buffer_json_members(RRDLABELS *labels, BUFFER *wb);
 
 void rrdlabels_migrate_to_these(RRDLABELS *dst, RRDLABELS *src);
 void rrdlabels_copy(RRDLABELS *dst, RRDLABELS *src);
+size_t rrdlabels_common_count(RRDLABELS *labels1, RRDLABELS *labels2);
 
 int rrdlabels_unittest(void);
 

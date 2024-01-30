@@ -1797,9 +1797,9 @@ static void ebpf_parse_ip_list_unsafe(void **out, char *ip)
             }
         }
 
-        if ((be64toh(*(uint64_t *)&first.addr32[2]) > be64toh(*(uint64_t *)&last.addr32[2]) &&
-             !memcmp(first.addr32, last.addr32, 2*sizeof(uint32_t))) ||
-            (be64toh(*(uint64_t *)&first.addr32) > be64toh(*(uint64_t *)&last.addr32)) ) {
+        if ((be64toh(*(uint64_t *)&first.addr64[1]) > be64toh(*(uint64_t *)&last.addr64[1]) &&
+             !memcmp(first.addr64, last.addr64, sizeof(uint64_t))) ||
+            (be64toh(*(uint64_t *)&first.addr64) > be64toh(*(uint64_t *)&last.addr64)) ) {
             netdata_log_info("The specified range %s is invalid, the second address is smallest than the first, it will be ignored.",
                              ipdup);
             goto cleanipdup;
@@ -3777,11 +3777,6 @@ static void ebpf_create_statistic_charts(int update_every)
                              NETDATA_EBPF_ORDER_STAT_THREADS,
                              update_every,
                              NULL);
-    /*
-#ifdef NETDATA_DEV_MODE
-    EBPF_PLUGIN_FUNCTIONS(EBPF_FUNCTION_THREAD, EBPF_PLUGIN_THREAD_FUNCTION_DESCRIPTION);
-#endif
-     */
 
     ebpf_create_thread_chart(NETDATA_EBPF_LIFE_TIME,
                              "Time remaining for thread.",
@@ -3789,11 +3784,6 @@ static void ebpf_create_statistic_charts(int update_every)
                              NETDATA_EBPF_ORDER_STAT_LIFE_TIME,
                              update_every,
                              NULL);
-    /*
-#ifdef NETDATA_DEV_MODE
-    EBPF_PLUGIN_FUNCTIONS(EBPF_FUNCTION_THREAD, EBPF_PLUGIN_THREAD_FUNCTION_DESCRIPTION);
-#endif
-     */
 
     int i,j;
     char name[256];
@@ -3811,9 +3801,6 @@ static void ebpf_create_statistic_charts(int update_every)
                                  j++,
                                  update_every,
                                  em);
-#ifdef NETDATA_DEV_MODE
-        EBPF_PLUGIN_FUNCTIONS(em->functions.fcnt_name, em->functions.fcnt_desc);
-#endif
 
         em->functions.order_thread_lifetime = j;
         snprintfz(name, sizeof(name) - 1, "%s_%s", NETDATA_EBPF_LIFE_TIME, em->info.thread_name);
@@ -3824,9 +3811,6 @@ static void ebpf_create_statistic_charts(int update_every)
                                  j++,
                                  update_every,
                                  em);
-#ifdef NETDATA_DEV_MODE
-        EBPF_PLUGIN_FUNCTIONS(em->functions.fcnt_name, em->functions.fcnt_desc);
-#endif
     }
 
     ebpf_create_statistic_load_chart(update_every);
@@ -4047,7 +4031,7 @@ int main(int argc, char **argv)
     ebpf_start_pthread_variables();
 
     netdata_configured_host_prefix = getenv("NETDATA_HOST_PREFIX");
-    if(verify_netdata_host_prefix() == -1) ebpf_exit(6);
+    if(verify_netdata_host_prefix(true) == -1) ebpf_exit(6);
 
     ebpf_allocate_common_vectors();
 

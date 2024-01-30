@@ -27,7 +27,7 @@ static struct zone_t *get_rapl_zone(const char *control_type __maybe_unused, str
     snprintfz(temp, FILENAME_MAX, "%s/%s", dirname, "name");
 
     char name[FILENAME_MAX + 1] = "";
-    if (read_file(temp, name, sizeof(name) - 1) != 0)
+    if (read_txt_file(temp, name, sizeof(name)) != 0)
         return NULL;
 
     char *trimmed = trim(name);
@@ -151,7 +151,7 @@ int do_sys_devices_virtual_powercap(int update_every, const char *name __maybe_u
                     update_every);
 
             fprintf(stdout,
-                    "CLABEL 'zone' '%s' 0\n"
+                    "CLABEL 'zone' '%s' 1\n"
                     "CLABEL_COMMIT\n",
                     zone->name);
 
@@ -171,7 +171,7 @@ int do_sys_devices_virtual_powercap(int update_every, const char *name __maybe_u
                     update_every);
 
             fprintf(stdout,
-                    "CLABEL 'zone' '%s' 0\n"
+                    "CLABEL 'zone' '%s' 1\n"
                     "CLABEL_COMMIT\n",
                     zone->name);
 

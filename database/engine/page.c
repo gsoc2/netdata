@@ -197,7 +197,10 @@ PGD *pgd_create(uint8_t type, uint32_t slots)
             break;
         }
         default:
-            fatal("Unknown page type: %uc", type);
+            netdata_log_error("%s() - Unknown page type: %uc", __FUNCTION__, type);
+            aral_freez(pgd_alloc_globals.aral_pgd, pg);
+            pg = PGD_EMPTY;
+            break;
     }
 
     return pg;
@@ -246,7 +249,10 @@ PGD *pgd_create_from_disk_data(uint8_t type, void *base, uint32_t size)
             pg->slots = pg->used;
             break;
         default:
-            fatal("Unknown page type: %uc", type);
+            netdata_log_error("%s() - Unknown page type: %uc", __FUNCTION__, type);
+            aral_freez(pgd_alloc_globals.aral_pgd, pg);
+            pg = PGD_EMPTY;
+            break;
     }
 
     return pg;
@@ -306,7 +312,8 @@ void pgd_free(PGD *pg)
             break;
         }
         default:
-            fatal("Unknown page type: %uc", pg->type);
+            netdata_log_error("%s() - Unknown page type: %uc", __FUNCTION__, pg->type);
+            break;
     }
 
     aral_freez(pgd_alloc_globals.aral_pgd, pg);
@@ -371,7 +378,8 @@ uint32_t pgd_memory_footprint(PGD *pg)
             break;
         }
         default:
-            fatal("Unknown page type: %uc", pg->type);
+            netdata_log_error("%s() - Unknown page type: %uc", __FUNCTION__, pg->type);
+            break;
     }
 
     return footprint;
@@ -419,7 +427,8 @@ uint32_t pgd_disk_footprint(PGD *pg)
             break;
         }
         default:
-            fatal("Unknown page type: %uc", pg->type);
+            netdata_log_error("%s() - Unknown page type: %uc", __FUNCTION__, pg->type);
+            break;
     }
 
     internal_fatal(pg->states & PGD_STATE_CREATED_FROM_DISK,
@@ -456,7 +465,8 @@ void pgd_copy_to_extent(PGD *pg, uint8_t *dst, uint32_t dst_size)
             break;
         }
         default:
-            fatal("Unknown page type: %uc", pg->type);
+            netdata_log_error("%s() - Unknown page type: %uc", __FUNCTION__, pg->type);
+            break;
     }
 
     pg->states = PGD_STATE_FLUSHED_TO_DISK;
@@ -537,7 +547,7 @@ void pgd_append_point(PGD *pg,
             break;
         }
         default:
-            fatal("DBENGINE: unknown page type id %d", pg->type);
+            netdata_log_error("%s() - Unknown page type: %uc", __FUNCTION__, pg->type);
             break;
     }
 }
@@ -588,7 +598,7 @@ static void pgdc_seek(PGDC *pgdc, uint32_t position)
             break;
         }
         default:
-            fatal("DBENGINE: unknown page type id %d", pg->type);
+            netdata_log_error("%s() - Unknown page type: %uc", __FUNCTION__, pg->type);
             break;
     }
 }
@@ -612,7 +622,7 @@ void pgdc_reset(PGDC *pgdc, PGD *pgd, uint32_t position)
     pgdc_seek(pgdc, position);
 }
 
-bool pgdc_get_next_point(PGDC *pgdc, uint32_t expected_position, STORAGE_POINT *sp)
+bool pgdc_get_next_point(PGDC *pgdc, uint32_t expected_position __maybe_unused, STORAGE_POINT *sp)
 {
     if (!pgdc->pgd || pgdc->pgd == PGD_EMPTY || pgdc->position >= pgdc->slots)
     {
@@ -668,7 +678,8 @@ bool pgdc_get_next_point(PGDC *pgdc, uint32_t expected_position, STORAGE_POINT *
             static bool logged = false;
             if (!logged)
             {
-                netdata_log_error("DBENGINE: unknown page type %d found. Cannot decode it. Ignoring its metrics.", pgd_type(pgdc->pgd));
+                netdata_log_error("DBENGINE: unknown page type %"PRIu32" found. Cannot decode it. Ignoring its metrics.",
+                                  pgd_type(pgdc->pgd));
                 logged = true;
             }
 

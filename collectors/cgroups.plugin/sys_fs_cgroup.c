@@ -255,7 +255,7 @@ void read_cgroup_plugin_configuration() {
     if(cgroup_update_every < localhost->rrd_update_every)
         cgroup_update_every = localhost->rrd_update_every;
 
-    cgroup_check_for_new_every = (int)config_get_number("plugin:cgroups", "check for new cgroups every", (long long)cgroup_check_for_new_every * (long long)cgroup_update_every);
+    cgroup_check_for_new_every = (int)config_get_number("plugin:cgroups", "check for new cgroups every", cgroup_check_for_new_every);
     if(cgroup_check_for_new_every < cgroup_update_every)
         cgroup_check_for_new_every = cgroup_update_every;
 
@@ -418,6 +418,8 @@ void read_cgroup_plugin_configuration() {
 
                        " !*/init.scope "                      // ignore init.scope
                        " !/system.slice/run-*.scope "         // ignore system.slice/run-XXXX.scope
+                       " *user.slice/docker-*"                // allow docker rootless containers
+                       " !*user.slice*"                       // ignore the rest stuff in user.slice 
                        " *.scope "                            // we need all other *.scope for sure
 
                        // ----------------------------------------------------------------
@@ -452,6 +454,7 @@ void read_cgroup_plugin_configuration() {
                        " !/lxc.monitor* "
                        " !/lxc.pivot "
                        " !/lxc.payload "
+                       " !*lxcfs.service/.control"
                        " !/machine "
                        " !/qemu "
                        " !/system "
@@ -474,7 +477,6 @@ void read_cgroup_plugin_configuration() {
                        " !/system "
                        " !/systemd "
                        " !/user "
-                       " !/user.slice "
                        " !/lxc/*/* "                          //  #2161 #2649
                        " !/lxc.monitor "
                        " !/lxc.payload/*/* "
@@ -1280,12 +1282,12 @@ cpu_limits2_err:
 
 static inline int update_memory_limits(struct cgroup *cg) {
     char **filename = &cg->filename_memory_limit;
-    const RRDSETVAR_ACQUIRED **chart_var = &cg->chart_var_memory_limit;
+    const RRDVAR_ACQUIRED **chart_var = &cg->chart_var_memory_limit;
     unsigned long long *value = &cg->memory_limit;
 
     if(*filename) {
         if(unlikely(!*chart_var)) {
-            *chart_var = rrdsetvar_custom_chart_variable_add_and_acquire(cg->st_mem_usage, "memory_limit");
+            *chart_var = rrdvar_chart_variable_add_and_acquire(cg->st_mem_usage, "memory_limit");
             if(!*chart_var) {
                 collector_error("Cannot create cgroup %s chart variable '%s'. Will not update its limit anymore.", cg->id, "memory_limit");
                 freez(*filename);
@@ -1301,12 +1303,13 @@ static inline int update_memory_limits(struct cgroup *cg) {
                     *filename = NULL;
                 }
                 else {
-                    rrdsetvar_custom_chart_variable_set(cg->st_mem_usage, *chart_var, (NETDATA_DOUBLE)(*value) / (1024.0 * 1024.0));
+                    rrdvar_chart_variable_set(
+                        cg->st_mem_usage, *chart_var, (NETDATA_DOUBLE)(*value) / (1024.0 * 1024.0));
                     return 1;
                 }
             } else {
-                char buffer[30 + 1];
-                int ret = read_file(*filename, buffer, 30);
+                char buffer[32];
+                int ret = read_txt_file(*filename, buffer, sizeof(buffer));
                 if(ret) {
                     collector_error("Cannot refresh cgroup %s memory limit by reading '%s'. Will not update its limit anymore.", cg->id, *filename);
                     freez(*filename);
@@ -1316,11 +1319,12 @@ static inline int update_memory_limits(struct cgroup *cg) {
                 char *s = "max\n\0";
                 if(strcmp(s, buffer) == 0){
                     *value = UINT64_MAX;
-                    rrdsetvar_custom_chart_variable_set(cg->st_mem_usage, *chart_var, (NETDATA_DOUBLE)(*value) / (1024.0 * 1024.0));
+                    rrdvar_chart_variable_set(
+                        cg->st_mem_usage, *chart_var, (NETDATA_DOUBLE)(*value) / (1024.0 * 1024.0));
                     return 1;
                 }
                 *value = str2ull(buffer, NULL);
-                rrdsetvar_custom_chart_variable_set(cg->st_mem_usage, *chart_var, (NETDATA_DOUBLE)(*value) / (1024.0 * 1024.0));
+                rrdvar_chart_variable_set(cg->st_mem_usage, *chart_var, (NETDATA_DOUBLE)(*value) / (1024.0 * 1024.0));
                 return 1;
             }
         }
@@ -1398,7 +1402,7 @@ void update_cgroup_charts() {
                 }
 
                 if(unlikely(!cg->chart_var_cpu_limit)) {
-                    cg->chart_var_cpu_limit = rrdsetvar_custom_chart_variable_add_and_acquire(cg->st_cpu, "cpu_limit");
+                    cg->chart_var_cpu_limit = rrdvar_chart_variable_add_and_acquire(cg->st_cpu, "cpu_limit");
                     if(!cg->chart_var_cpu_limit) {
                         collector_error("Cannot create cgroup %s chart variable 'cpu_limit'. Will not update its limit anymore.", cg->id);
                         if(cg->filename_cpuset_cpus) freez(cg->filename_cpuset_cpus);
@@ -1428,7 +1432,7 @@ void update_cgroup_charts() {
                             rrdset_is_obsolete___safe_from_collector_thread(cg->st_cpu_limit);
                             cg->st_cpu_limit = NULL;
                         }
-                        rrdsetvar_custom_chart_variable_set(cg->st_cpu, cg->chart_var_cpu_limit, NAN);
+                        rrdvar_chart_variable_set(cg->st_cpu, cg->chart_var_cpu_limit, NAN);
                     }
                 }
             }
@@ -1669,16 +1673,17 @@ void *cgroups_main(void *ptr) {
 
     // we register this only on localhost
     // for the other nodes, the origin server should register it
-    rrd_collector_started(); // this creates a collector that runs for as long as netdata runs
     cgroup_netdev_link_init();
 
-    rrd_function_add(localhost, NULL, "containers-vms", 10, RRDFUNCTIONS_PRIORITY_DEFAULT / 2,
-                     RRDFUNCTIONS_CGTOP_HELP, "top", HTTP_ACCESS_ANY,
-                     true, cgroup_function_cgroup_top, NULL);
+    rrd_function_add_inline(localhost, NULL, "containers-vms", 10,
+                            RRDFUNCTIONS_PRIORITY_DEFAULT / 2, RRDFUNCTIONS_CGTOP_HELP,
+                            "top", HTTP_ACCESS_ANONYMOUS_DATA,
+                            cgroup_function_cgroup_top);
 
-    rrd_function_add(localhost, NULL, "systemd-services", 10, RRDFUNCTIONS_PRIORITY_DEFAULT / 3,
-                     RRDFUNCTIONS_SYSTEMD_SERVICES_HELP, "top", HTTP_ACCESS_ANY,
-                     true, cgroup_function_systemd_top, NULL);
+    rrd_function_add_inline(localhost, NULL, "systemd-services", 10,
+                            RRDFUNCTIONS_PRIORITY_DEFAULT / 3, RRDFUNCTIONS_SYSTEMD_SERVICES_HELP,
+                            "top", HTTP_ACCESS_ANONYMOUS_DATA,
+                            cgroup_function_systemd_top);
 
     heartbeat_t hb;
     heartbeat_init(&hb);

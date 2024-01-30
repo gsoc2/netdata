@@ -594,7 +594,9 @@ void *analytics_main(void *ptr)
 
     analytics_gather_immutable_meta_data();
     analytics_gather_mutable_meta_data();
-    send_statistics("META_START", "-", "-");
+
+    analytics_statistic_t statistic = { "META_START", "-", "-"  };
+    analytics_statistic_send(&statistic);
     analytics_log_data();
 
     sec = 0;
@@ -609,8 +611,11 @@ void *analytics_main(void *ptr)
             continue;
 
         analytics_gather_mutable_meta_data();
-        send_statistics("META", "-", "-");
+
+        analytics_statistic_t stt = { "META", "-", "-"  };
+        analytics_statistic_send(&stt);
         analytics_log_data();
+
         sec = 0;
     }
 
@@ -713,7 +718,7 @@ void get_system_timezone(void)
     }
 
     // use the contents of /etc/timezone
-    if (!timezone && !read_file("/etc/timezone", buffer, FILENAME_MAX)) {
+    if (!timezone && !read_txt_file("/etc/timezone", buffer, sizeof(buffer))) {
         timezone = buffer;
         netdata_log_info("TIMEZONE: using the contents of /etc/timezone");
     }
@@ -936,7 +941,10 @@ void set_global_environment() {
     setenv("LC_ALL", "C", 1);
 }
 
-void send_statistics(const char *action, const char *action_result, const char *action_data) {
+void analytics_statistic_send(const analytics_statistic_t *statistic) {
+    if (!statistic)
+        return;
+
     static char *as_script;
 
     if (netdata_anonymous_statistics_enabled == -1) {
@@ -973,16 +981,19 @@ void send_statistics(const char *action, const char *action_result, const char *
         freez(optout_file);
     }
 
-    if (!netdata_anonymous_statistics_enabled || !action)
+    if (!netdata_anonymous_statistics_enabled || !statistic->action)
         return;
 
-    if (!action_result)
+    const char *action_result = statistic->result;
+    const char *action_data = statistic->data;
+
+    if (!statistic->result)
         action_result = "";
-    if (!action_data)
+    if (!statistic->data)
         action_data = "";
 
     char *command_to_run = mallocz(
-        sizeof(char) * (strlen(action) + strlen(action_result) + strlen(action_data) + strlen(as_script) +
+        sizeof(char) * (strlen(statistic->action) + strlen(action_result) + strlen(action_data) + strlen(as_script) +
                         analytics_data.data_length + (ANALYTICS_NO_OF_ITEMS * 3) + 15));
     pid_t command_pid;
 
@@ -990,7 +1001,7 @@ void send_statistics(const char *action, const char *action_result, const char *
         command_to_run,
         "%s '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' '%s' ",
         as_script,
-        action,
+        statistic->action,
         action_result,
         action_data,
         analytics_data.netdata_config_stream_enabled,
@@ -1036,7 +1047,7 @@ void send_statistics(const char *action, const char *action_result, const char *
 
     nd_log(NDLS_DAEMON, NDLP_DEBUG,
            "%s '%s' '%s' '%s'",
-           as_script, action, action_result, action_data);
+           as_script, statistic->action, action_result, action_data);
 
     FILE *fp_child_input;
     FILE *fp_child_output = netdata_popen(command_to_run, &command_pid, &fp_child_input);

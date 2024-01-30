@@ -63,6 +63,14 @@ It scales nicely from just a single server to thousands of servers, even in comp
   Netdata is a modular platform that can be extended in all possible ways and it also integrates nicely with other monitoring solutions.
 
 ---
+<p align="center">
+<a href="https://www.ivanomalavolta.com/files/papers/ICSOC_2023.pdf#gh-dark-mode-only">
+  <img src="https://www.netdata.cloud/img/readme-images/Energy-efficiency.jpg" alt="Energy Efficiency" width="850"/>
+</a>
+<a href="https://www.ivanomalavolta.com/files/papers/ICSOC_2023.pdf#gh-light-mode-only">
+  <img src="https://www.netdata.cloud/img/readme-images/Energy-efficiency-light.jpg" alt="Energy efficiency" width="850"/>
+</a>
+</p>
 
 :star: **Netdata is the most energy-efficient monitoring tool for Docker-based systems** :star: <br/>
 
@@ -112,7 +120,7 @@ Check the [systemd-journal plugin of Netdata](https://github.com/netdata/netdata
   <br />
   Netdata actively supports and is a member of the Cloud Native Computing Foundation (CNCF)<br />
   &nbsp;<br/>
-  ...and due to your love :heart: and :star:, <b>Netdata is leading the Observability category</b> at the <a href="https://landscape.cncf.io/card-mode?category=observability-and-analysis&grouping=no&sort=stars">CNCF landscape</a>!
+  ...and due to your love :heart:, it is one of the most :star:'d projects in the <a href="https://landscape.cncf.io/?item=observability-and-analysis--monitoring--netdata">CNCF landscape</a>!
 </p>
 &nbsp;<br/>
 

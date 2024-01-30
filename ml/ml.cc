@@ -358,7 +358,7 @@ ml_dimension_calculated_numbers(ml_training_thread_t *training_thread, ml_dimens
     */
     struct storage_engine_query_handle handle;
 
-    storage_engine_query_init(dim->rd->tiers[0].backend, dim->rd->tiers[0].db_metric_handle, &handle,
+    storage_engine_query_init(dim->rd->tiers[0].seb, dim->rd->tiers[0].smh, &handle,
               training_response.query_after_t, training_response.query_before_t,
               STORAGE_PRIORITY_BEST_EFFORT);
 
@@ -1416,8 +1416,7 @@ void ml_host_get_info(RRDHOST *rh, BUFFER *wb)
 
     buffer_json_member_add_double(wb, "dimension-anomaly-score-threshold", Cfg.dimension_anomaly_score_threshold);
 
-    buffer_json_member_add_string(wb, "anomaly-detection-grouping-method",
-                                  time_grouping_method2string(Cfg.anomaly_detection_grouping_method));
+    buffer_json_member_add_string(wb, "anomaly-detection-grouping-method", time_grouping_id2txt(Cfg.anomaly_detection_grouping_method));
 
     buffer_json_member_add_int64(wb, "anomaly-detection-query-duration", Cfg.anomaly_detection_query_duration);
 
@@ -1787,7 +1786,7 @@ void ml_init()
     // create table
     if (db) {
         int target_version = perform_ml_database_migration(db, ML_METADATA_VERSION);
-        if (configure_sqlite_database(db, target_version)) {
+        if (configure_sqlite_database(db, target_version, "ml_config")) {
             error_report("Failed to setup ML database");
             sqlite3_close(db);
             db = NULL;

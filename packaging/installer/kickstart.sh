@@ -24,7 +24,7 @@ PATH="${PATH}:/usr/local/bin:/usr/local/sbin"
 REPOCONFIG_DEB_VERSION="2-2"
 REPOCONFIG_RPM_VERSION="2-2"
 START_TIME="$(date +%s)"
-STATIC_INSTALL_ARCHES="x86_64 armv7l aarch64 ppc64le"
+STATIC_INSTALL_ARCHES="x86_64 armv7l armv6l aarch64 ppc64le"
 
 # ======================================================================
 # URLs used throughout the script
@@ -403,6 +403,9 @@ support_list() {
 }
 
 success_banner() {
+  printf >&2 "%s\n" "To view your system's real-time performance metrics, open your web browser and enter http://NODE:19999."
+  printf >&2 "%s\n\n" "Replace NODE with the IP address or hostname of your Netdata server to access the dashboard."
+
   printf >&2 "%s\n\n" "Official documentation can be found online at ${DOCS_URL}."
 
   if [ -z "${CLAIM_TOKEN}" ]; then
@@ -636,9 +639,9 @@ get_redirect() {
   url="${1}"
 
   if [ -n "${CURL}" ]; then
-    run sh -c "${CURL} ${url} -s -L -I -o /dev/null -w '%{url_effective}' | grep -o '[^/]*$'" || return 1
+    run sh -c "${CURL} ${url} -s -L -I -o /dev/null -w '%{url_effective}' | grep -Eo '[^/]+$'" || return 1
   elif command -v wget > /dev/null 2>&1; then
-    run sh -c "wget -S -O /dev/null ${url} 2>&1 | grep -m 1 Location | grep -o '[^/]*$'" || return 1
+    run sh -c "wget -S -O /dev/null ${url} 2>&1 | grep -m 1 Location | grep -Eo '[^/]+$'" || return 1
   else
     fatal "${ERROR_F0003}" F0003
   fi
@@ -1326,7 +1329,7 @@ netdata_avail_check() {
       ;;
     centos|fedora|ol|amzn)
       # shellcheck disable=SC2086
-      ${pm_cmd} search --nogpgcheck -v netdata | grep -qE 'Repo *: netdata(-edge)?$'
+      LC_ALL=C ${pm_cmd} search --nogpgcheck -v netdata | grep -qE 'Repo *: netdata(-edge)?$'
       return $?
       ;;
     opensuse)
@@ -1342,7 +1345,7 @@ check_special_native_deps() {
   if [ "${DISTRO_COMPAT_NAME}" = "centos" ] && [ "${SYSVERSION}" -gt 6 ]; then
     progress "EPEL is required on this system, checking if it’s available."
 
-    if ${pm_cmd} search --nogpgcheck -v epel-release | grep -q "No matches found"; then
+    if LC_ALL=C ${pm_cmd} search --nogpgcheck -v epel-release | grep -q "No matches found"; then
       warning "Unable to find a suitable source for libuv, cannot install using native packages on this system."
       return 1
     else
@@ -1355,6 +1358,14 @@ check_special_native_deps() {
       fi
     fi
   fi
+}
+
+cleanup_apt_cache() {
+    cache_dir="/var/cache/apt/archives"
+
+    if [ -d "${cache_dir}" ]; then
+        run_as_root find "${cache_dir}" -type f -name 'netdata*.deb' -delete
+    fi
 }
 
 common_rpm_opts() {
@@ -1423,6 +1434,7 @@ try_package_install() {
         install_subcmd="install"
       fi
       needs_early_refresh=1
+      needs_apt_cache_cleanup=1
       pm_cmd="apt-get"
       repo_subcmd="update"
       pkg_type="deb"
@@ -1520,6 +1532,10 @@ try_package_install() {
       if ! run_as_root env ${env} ${pm_cmd} ${repo_subcmd} ${repo_update_opts}; then
         warning "${failed_refresh_msg}"
         return 2
+      fi
+
+      if [ -n "${needs_apt_cache_cleanup}" ]; then
+        cleanup_apt_cache
       fi
     fi
 
@@ -1751,8 +1767,14 @@ install_local_build_dependencies() {
   fi
 
   # shellcheck disable=SC2086
-  if ! run_as_root "${bash}" "${tmpdir}/install-required-packages.sh" ${opts} netdata; then
-    warning "Failed to install all required packages, but installation might still be possible."
+  if [ "$(uname -s)" = "Darwin" ]; then
+    if ! run "${bash}" "${tmpdir}/install-required-packages.sh" ${opts} netdata; then
+      warning "Failed to install all required packages, but installation might still be possible."
+    fi
+  else
+    if ! run_as_root "${bash}" "${tmpdir}/install-required-packages.sh" ${opts} netdata; then
+      warning "Failed to install all required packages, but installation might still be possible."
+    fi
   fi
 }
 
@@ -1880,9 +1902,13 @@ prepare_offline_install_source() {
         for arch in ${STATIC_INSTALL_ARCHES}; do
           set_static_archive_urls "${SELECTED_RELEASE_CHANNEL}" "${arch}"
 
-          progress "Fetching ${NETDATA_STATIC_ARCHIVE_URL}"
-          if ! download "${NETDATA_STATIC_ARCHIVE_URL}" "netdata-${arch}-latest.gz.run"; then
-            warning "Failed to download static installer archive for ${arch}. ${BADNET_MSG}."
+          if check_for_remote_file "${NETDATA_STATIC_ARCH_URL}"; then
+            progress "Fetching ${NETDATA_STATIC_ARCHIVE_URL}"
+            if ! download "${NETDATA_STATIC_ARCHIVE_URL}" "netdata-${arch}-latest.gz.run"; then
+                warning "Failed to download static installer archive for ${arch}. ${BADNET_MSG}."
+            fi
+          else
+            progress "Skipping ${NETDATA_STATIC_ARCHIVE_URL} as it does not exist on the server."
           fi
         done
         legacy=0
